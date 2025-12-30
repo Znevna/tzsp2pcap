@@ -608,7 +608,7 @@ int main(int argc, char **argv) {
 				goto err_cleanup_pcap;
 			}
 
-			if (!(fp_stat.st_mode & S_IFREG)) {
+			if (!S_ISREG(fp_stat.st_mode)) {
 				fprintf(stderr, "Output is not a regular file, but rotation was requested.\n");
 				retval = -1;
 				goto err_cleanup_pcap;
