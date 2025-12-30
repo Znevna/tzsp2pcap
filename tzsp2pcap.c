@@ -834,7 +834,11 @@ next_packet:
 				goto err_cleanup_pcap;
 			}
 			/* Reopen dumper with new DLT */
-			rotate_dumper(&my_pcap);
+			if (rotate_dumper(&my_pcap) != 0) {
+				fprintf(stderr, "Error rotating dumper after DLT change\n");
+				retval = -1;
+				goto err_cleanup_pcap;
+			}
 		}
 
 		p += sizeof(struct tzsp_header);
