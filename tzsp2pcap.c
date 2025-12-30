@@ -85,7 +85,7 @@ struct my_pcap_t {
 	const char *postrotate_command;
 };
 
-static int self_pipe_fds[2];
+static int self_pipe_fds[2] = { -1, -1 };
 
 static void request_terminate_handler(int signum) {
 	signal(signum, SIG_DFL);
