@@ -505,8 +505,29 @@ int main(int argc, char **argv) {
 			break;
 
 		case 's':
-			recv_buffer_size = atoi(optarg);
+		{
+			char *end = NULL;
+			long size_val = strtol(optarg, &end, 10);
+
+			if (end == optarg || *end != '\0') {
+				fprintf(stderr, "Invalid SIZE '%s' provided with -s\n", optarg);
+				retval = -1;
+				goto exit;
+			}
+			if (size_val <= 0) {
+				fprintf(stderr, "Invalid receive buffer size %ld (must be > 0)\n", size_val);
+				retval = -1;
+				goto exit;
+			}
+			if (size_val > 16 * 1024 * 1024) {
+				fprintf(stderr, "Receive buffer size %ld too large (max 16777216)\n", size_val);
+				retval = -1;
+				goto exit;
+			}
+
+			recv_buffer_size = (int)size_val;
 			break;
+		}
 
 		case 'v':
 			my_pcap.verbose++;
