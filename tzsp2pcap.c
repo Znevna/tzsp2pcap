@@ -487,6 +487,12 @@ int main(int argc, char **argv) {
 				free((void*) my_pcap.filename_template);
 			}
 			my_pcap.filename_template = strdup(optarg);
+			if (my_pcap.filename_template == NULL) {
+				perror("strdup(-o filename)");
+				retval = errno;
+				my_pcap.filename_template = NULL;
+				goto exit;
+			}
 			break;
 
 		case 's':
