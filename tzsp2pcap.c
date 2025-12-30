@@ -434,7 +434,7 @@ int main(int argc, char **argv) {
 
 	struct my_pcap_t my_pcap = {
 	    .pcap                    = NULL,
-	    .filename_template       = strdup(DEFAULT_OUT_FILENAME),
+	    .filename_template       = NULL,
 	    .filename                = NULL,
 	    .fp                      = NULL,
 	    .dumper                  = NULL,
@@ -445,6 +445,13 @@ int main(int argc, char **argv) {
 	    .rotation_count          = 0,
 	    .postrotate_command      = NULL,
 	};
+
+	my_pcap.filename_template = strdup(DEFAULT_OUT_FILENAME);
+	if (my_pcap.filename_template == NULL) {
+		perror("strdup(DEFAULT_OUT_FILENAME)");
+		retval = errno;
+		goto exit;
+	}
 
 	char flush_every_packet = 0;
 
