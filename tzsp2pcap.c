@@ -87,14 +87,20 @@ struct my_pcap_t {
 
 static int self_pipe_fds[2] = { -1, -1 };
 
-static void request_terminate_handler(int signum) {
-	signal(signum, SIG_DFL);
+/* Flags modified only in signal handlers; read in main loop. */
+static volatile sig_atomic_t terminate_requested = 0;
+static volatile sig_atomic_t child_exited = 0;
+static volatile sig_atomic_t shutting_down = 0;
 
-	fprintf(stderr, "Caught signal, exiting (once more to force)\n");
+static void request_terminate_handler(int signum) {
+	(void)signum;
+
+	/* Just record the request and wake the main loop. */
+	terminate_requested = 1;
 
 	char data = 0;
-	if (write(self_pipe_fds[1], &data, sizeof(data)) == -1) {
-		perror("write");
+	if (self_pipe_fds[1] >= 0) {
+		if (!shutting_down) (void)write(self_pipe_fds[1], &data, sizeof(data));
 	}
 }
 
@@ -153,10 +159,13 @@ static void trap_signal(int signum) {
 static void catch_child(int sig_num) {
 	(void) sig_num;
 
-	/* when we get here, we know there's a zombie child waiting */
-	int child_status;
+	/* Record that a child has exited and wake the main loop. */
+	child_exited = 1;
 
-	wait(&child_status);
+	char data = 0;
+	if (self_pipe_fds[1] >= 0) {
+		if (!shutting_down) (void)write(self_pipe_fds[1], &data, sizeof(data));
+	}
 }
 
 static const char *get_filename(struct my_pcap_t *my_pcap) {
@@ -558,16 +567,27 @@ int main(int argc, char **argv) {
 		goto exit;
 	}
 
-	trap_signal(SIGINT);
-	trap_signal(SIGHUP);
-	trap_signal(SIGTERM);
-	signal(SIGCHLD, catch_child);
-
 	if (pipe(self_pipe_fds) == -1) {
 		perror("Creating self-wake pipe\n");
 		retval = errno;
 		goto exit;
 	}
+
+	/* Make the read end of the self-pipe non-blocking to avoid deadlocks. */
+	{
+		int flags = fcntl(self_pipe_fds[0], F_GETFL, 0);
+		if (flags == -1 || fcntl(self_pipe_fds[0], F_SETFL, flags | O_NONBLOCK) == -1) {
+			perror("fcntl(O_NONBLOCK) on self-pipe");
+			retval = errno;
+			goto err_cleanup_pipe;
+		}
+	}
+
+	/* Set up signal handlers only after the self-pipe is ready. */
+	trap_signal(SIGINT);
+	trap_signal(SIGHUP);
+	trap_signal(SIGTERM);
+	signal(SIGCHLD, catch_child);
 
 	int tzsp_listener = setup_tzsp_listener(listen_port);
 	if (tzsp_listener == -1) {
@@ -648,7 +668,32 @@ next_packet:
 		}
 
 		if (FD_ISSET(self_pipe_fds[0], &read_set)) {
-			break;
+			/* Drain the self-pipe to clear wake-up notifications. */
+			char buf[64];
+			ssize_t r;
+			do {
+				r = read(self_pipe_fds[0], buf, sizeof(buf));
+			} while (r > 0);
+
+			/* If a terminate request was recorded, exit the loop. */
+			if (terminate_requested) {
+				break;
+			}
+
+			/* If a child has exited, reap it/them here. */
+			if (child_exited) {
+				int saved_errno = errno;
+				int status;
+				pid_t pid;
+				do {
+					pid = waitpid(-1, &status, WNOHANG);
+				} while (pid > 0);
+				errno = saved_errno;
+				child_exited = 0;
+			}
+
+			/* Continue to next select() without processing packets. */
+			continue;
 		}
 
 		assert(FD_ISSET(tzsp_listener, &read_set));
@@ -820,6 +865,8 @@ err_cleanup_pcap:
 		free(recv_buffer);
 		recv_buffer = NULL;
 	}
+	shutting_down = 1;
+
 	if (my_pcap.dumper) {
 		pcap_dump_close(my_pcap.dumper);
 		my_pcap.dumper = NULL;
