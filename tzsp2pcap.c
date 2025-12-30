@@ -619,12 +619,22 @@ int main(int argc, char **argv) {
 		}
 
 		case 'C': {
-			int rotation_size_threshold = atoi(optarg);
-			if (rotation_size_threshold <= 0) {
-				fprintf(stderr, "Invalid -C filesize provided\n");
+			char *end = NULL;
+			long rotation_size_long = strtol(optarg, &end, 10);
+
+			if (end == optarg || *end != '\0') {
+				fprintf(stderr, "Invalid -C filesize '%s' provided\n", optarg);
 				retval = -1;
 				goto exit;
 			}
+			if (rotation_size_long <= 0 || rotation_size_long > INT_MAX) {
+				fprintf(stderr, "Invalid -C filesize %ld provided (must be 1-%d)\n",
+					rotation_size_long, INT_MAX);
+				retval = -1;
+				goto exit;
+			}
+
+			int rotation_size_threshold = (int)rotation_size_long;
 			my_pcap.rotation_size_threshold = rotation_size_threshold;
 			break;
 		}
