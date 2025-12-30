@@ -463,8 +463,24 @@ int main(int argc, char **argv) {
 			break;
 
 		case 'p':
-			listen_port = atoi(optarg);
+		{
+			char *end = NULL;
+			long port_val = strtol(optarg, &end, 10);
+
+			if (end == optarg || *end != '\0') {
+				fprintf(stderr, "Invalid port '%s' provided with -p\n", optarg);
+				retval = -1;
+				goto exit;
+			}
+			if (port_val <= 0 || port_val > 65535) {
+				fprintf(stderr, "Invalid port %ld provided with -p (must be 1-65535)\n", port_val);
+				retval = -1;
+				goto exit;
+			}
+
+			listen_port = (uint16_t)port_val;
 			break;
+		}
 
 		case 'o':
 			if (my_pcap.filename_template) {
