@@ -121,7 +121,7 @@ static int setup_tzsp_listener(uint16_t listen_port) {
 		#endif
 
 		.sin6_family = AF_INET6,
-		.sin6_port = ntohs(listen_port),
+		.sin6_port = htons(listen_port),
 		.sin6_flowinfo = 0,
 		.sin6_addr = in6addr_any,
 	};
