@@ -467,6 +467,28 @@ static void usage(const char *program) {
 	        DEFAULT_RECV_BUFFER_SIZE);
 }
 
+/*
+ * Map TZSP encapsulation types to libpcap DLTs.
+ * These values follow the MikroTik TZSP specification.
+ */
+static int tzsp_encap_to_dlt(uint16_t encap)
+{
+    switch (encap) {
+        case 1:  /* Ethernet */
+            return DLT_EN10MB;
+        case 2:  /* 802.11 (no radiotap) */
+            return DLT_IEEE802_11;
+        case 3:  /* Prism header + 802.11 */
+            return DLT_PRISM_HEADER;
+        case 4:  /* AVS header + 802.11 */
+            return DLT_IEEE802_11_RADIO_AVS;
+        case 5:  /* Radiotap + 802.11 */
+            return DLT_IEEE802_11_RADIO;
+        default:
+            return -1; /* unsupported */
+    }
+}
+
 int main(int argc, char **argv) {
 	int retval = 0;
 
@@ -789,7 +811,31 @@ next_packet:
 			goto next_packet;
 		}
 
-		struct tzsp_header *hdr = (struct tzsp_header *) recv_buffer;
+		struct tzsp_header hdr_local;
+		memcpy(&hdr_local, recv_buffer, sizeof(hdr_local));
+		const struct tzsp_header *hdr = &hdr_local;
+
+		/* Determine correct DLT from TZSP encapsulation */
+		int dlt = tzsp_encap_to_dlt(ntohs(hdr->encap));
+		if (dlt < 0) {
+			fprintf(stderr,
+				"Unsupported TZSP encapsulation type: %u\n",
+				ntohs(hdr->encap));
+			goto next_packet;
+		}
+
+		/* If DLT changed, reopen pcap dumper */
+		if (pcap_datalink(my_pcap.pcap) != dlt) {
+			pcap_close(my_pcap.pcap);
+			my_pcap.pcap = pcap_open_dead(dlt, recv_buffer_size);
+			if (!my_pcap.pcap) {
+				fprintf(stderr, "Could not reinitialize pcap for DLT %d\n", dlt);
+				retval = -1;
+				goto err_cleanup_pcap;
+			}
+			/* Reopen dumper with new DLT */
+			rotate_dumper(&my_pcap);
+		}
 
 		p += sizeof(struct tzsp_header);
 
