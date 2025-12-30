@@ -588,12 +588,22 @@ int main(int argc, char **argv) {
 			break;
 
 		case 'G': {
-			int rotation_interval = atoi(optarg);
-			if (rotation_interval <= 0) {
-				fprintf(stderr, "Invalid -G seconds provided\n");
+			char *end = NULL;
+			long rotation_interval_long = strtol(optarg, &end, 10);
+
+			if (end == optarg || *end != '\0') {
+				fprintf(stderr, "Invalid -G seconds '%s' provided\n", optarg);
 				retval = -1;
 				goto exit;
 			}
+			if (rotation_interval_long <= 0 || rotation_interval_long > INT_MAX) {
+				fprintf(stderr, "Invalid -G seconds %ld provided (must be 1-%d)\n",
+					rotation_interval_long, INT_MAX);
+				retval = -1;
+				goto exit;
+			}
+
+			int rotation_interval = (int)rotation_interval_long;
 
 			time_t now;
 			if ((now = time(NULL)) == (time_t) -1) {
