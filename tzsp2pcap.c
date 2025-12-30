@@ -219,14 +219,35 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
 	}
 
 	pid_t child;
+	char *cmd_filename = NULL;
+
+	if (filename != NULL) {
+		cmd_filename = strdup(filename);
+		if (cmd_filename == NULL) {
+			perror("run_postrotate_command: strdup failed");
+			return;
+		}
+	}
 
 	child = fork();
 	if (child == -1) {
 		perror("run_postrotate_command: fork failed");
+		free(cmd_filename);
 		return;
+	}
+	if (child == 0) {
+		if (self_pipe_fds[0] >= 0) {
+			close(self_pipe_fds[0]);
+			self_pipe_fds[0] = -1;
+		}
+		if (self_pipe_fds[1] >= 0) {
+			close(self_pipe_fds[1]);
+			self_pipe_fds[1] = -1;
+		}
 	}
 	if (child != 0) {
 		/* Parent process. */
+		free(cmd_filename);
 		return;
 	}
 
@@ -239,13 +260,17 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
 #else
 	setpriority(PRIO_PROCESS, 0, 19);
 #endif
-	if (execlp(my_pcap->postrotate_command, my_pcap->postrotate_command, filename, NULL) == -1) {
+	if (execlp(my_pcap->postrotate_command,
+		my_pcap->postrotate_command,
+		cmd_filename ? cmd_filename : "",
+		NULL) == -1) {
 		fprintf(stderr,
 		        "after_logrotate: execlp(%s, %s) failed: %s\n",
 		        my_pcap->postrotate_command,
-		        filename,
+				cmd_filename ? cmd_filename : "",
 		        strerror(errno));
     }
+	free(cmd_filename);
 	exit(1);
 }
 
