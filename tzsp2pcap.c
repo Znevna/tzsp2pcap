@@ -567,6 +567,12 @@ int main(int argc, char **argv) {
 
 		case 'z':
 			my_pcap.postrotate_command = strdup(optarg);
+			if (my_pcap.postrotate_command == NULL) {
+				perror("strdup(-z cmd)");
+				retval = errno;
+				my_pcap.postrotate_command = NULL;
+				goto exit;
+			}
 			break;
 
 		default:
