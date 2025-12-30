@@ -294,9 +294,14 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 }
 
 static void close_dumper(struct my_pcap_t *my_pcap) {
-	pcap_dump_close(my_pcap->dumper);
+	if (my_pcap->dumper != NULL) {
+		pcap_dump_close(my_pcap->dumper);
+	}
 	my_pcap->dumper   = NULL;
-	my_pcap->filename = NULL;
+	if (my_pcap->filename != NULL) {
+		free((void *)my_pcap->filename);
+		my_pcap->filename = NULL;
+	}
 	my_pcap->fp       = NULL;
 }
 
