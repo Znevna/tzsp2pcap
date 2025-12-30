@@ -616,7 +616,9 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	char *recv_buffer = malloc(recv_buffer_size);
+	char *recv_buffer = NULL;
+
+	recv_buffer = malloc(recv_buffer_size);
 	if (!recv_buffer) {
 		fprintf(stderr, "Could not allocate receive buffer of %i bytes\n",
 		        recv_buffer_size);
@@ -813,11 +815,19 @@ next_packet:
 		}
 	}
 
-	free(recv_buffer);
-
 err_cleanup_pcap:
-	if (my_pcap.dumper)
+	if (recv_buffer) {
+		free(recv_buffer);
+		recv_buffer = NULL;
+	}
+	if (my_pcap.dumper) {
 		pcap_dump_close(my_pcap.dumper);
+		my_pcap.dumper = NULL;
+	}
+
+	if (my_pcap.fp) {
+		my_pcap.fp = NULL;
+	}
 
 	if (my_pcap.pcap)
 		pcap_close(my_pcap.pcap);
