@@ -182,6 +182,7 @@ static const char *get_filename(struct my_pcap_t *my_pcap) {
 
 		if (strftime((char *)filename, PATH_MAX, my_pcap->filename_template, local_tm) == 0) {
 			fprintf(stderr, "get_filename: size of template expanded via strftime exceeded PATH_MAX\n");
+			free(filename);
 			return NULL;
 		}
 
@@ -191,12 +192,22 @@ static const char *get_filename(struct my_pcap_t *my_pcap) {
 	if (my_pcap->rotation_size_threshold > 0 && my_pcap->rotation_count > 0) {
 		char *filename = malloc(PATH_MAX);
 
+		if (filename == NULL) {
+			perror("get_filename: malloc");
+			return NULL;
+		}
+
 		if (snprintf(filename, PATH_MAX, "%s.%d", my_pcap->filename_template, my_pcap->rotation_count) >= PATH_MAX) {
 			fprintf(stderr, "get_filename: size of template with count suffix exceeded PATH_MAX\n");
+			free(filename);
 			return NULL;
 		}
 
 		return filename;
+	}
+
+	if (!my_pcap->filename_template) {
+		return NULL;
 	}
 
 	return strdup(my_pcap->filename_template);
