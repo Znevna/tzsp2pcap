@@ -642,9 +642,12 @@ int main(int argc, char **argv) {
 		}
 
 		if (open_dumper(&my_pcap, initial_filename) == -1) {
+			free((void *)initial_filename);
 			retval = -1;
 			goto err_cleanup_pcap;
 		}
+
+		free((void *)initial_filename);
 
 		if ((my_pcap.rotation_size_threshold > 0 || my_pcap.rotation_interval > 0)) {
 			struct stat fp_stat;
