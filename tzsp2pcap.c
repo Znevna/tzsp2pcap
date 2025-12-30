@@ -677,7 +677,13 @@ int main(int argc, char **argv) {
 	/* Make the read end of the self-pipe non-blocking to avoid deadlocks. */
 	{
 		int flags = fcntl(self_pipe_fds[0], F_GETFL, 0);
-		if (flags == -1 || fcntl(self_pipe_fds[0], F_SETFL, flags | O_NONBLOCK) == -1) {
+		if (flags == -1) {
+			perror("fcntl(F_GETFL) on self-pipe");
+			retval = errno;
+			goto err_cleanup_pipe;
+		}
+
+		if (fcntl(self_pipe_fds[0], F_SETFL, flags | O_NONBLOCK) == -1) {
 			perror("fcntl(O_NONBLOCK) on self-pipe");
 			retval = errno;
 			goto err_cleanup_pipe;
