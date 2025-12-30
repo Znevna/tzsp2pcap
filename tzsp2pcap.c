@@ -635,6 +635,8 @@ next_packet:
 		{
 			if (errno == EINTR) continue;
 			perror("select");
+			retval = errno;
+			break;
 		}
 
 		if (FD_ISSET(self_pipe_fds[0], &read_set)) {
@@ -650,7 +652,7 @@ next_packet:
 		if (my_pcap.verbose >= 2) {
 			fprintf(stderr,
 			        "read 0x%.4zx bytes into buffer of size 0x%.4x\n",
-			        readsz, recv_buffer_size);
+			        (size_t)readsz, recv_buffer_size);
 		}
 
 		char *p = recv_buffer;
@@ -658,6 +660,11 @@ next_packet:
 		if (readsz == -1) {
 			perror("recv()");
 			break;
+		}
+
+		if (readsz == 0) {
+			fprintf(stderr, "Zero-length UDP packet ignored\n");
+			goto next_packet;
 		}
 
 		char *end = recv_buffer + readsz;
@@ -697,32 +704,47 @@ next_packet:
 				// some packets only have the type field, which is
 				// guaranteed by (p < end).
 
-				struct tzsp_tag *tag = (struct tzsp_tag *) p;
+				uint8_t tag_type = (uint8_t)*p;
 
 				if (my_pcap.verbose) {
 					fprintf(stderr,
-					        "\ttag { type = %s(%u) }\n",
-					        name_tag(tag->type,
-					                 tzsp_tag_names, ARRAYSZ(tzsp_tag_names)),
-					        tag->type);
+						"\ttag { type = %s(%u) }\n",
+						name_tag(tag_type,
+							tzsp_tag_names, ARRAYSZ(tzsp_tag_names)),
+						tag_type);
 				}
 
-				if (tag->type == TZSP_TAG_END) {
+				if (tag_type == TZSP_TAG_END) {
+					if (p + 1 > end) {
+						fprintf(stderr, "Malformed packet (truncated END tag)\n");
+						goto next_packet;
+					}
 					got_end_tag = 1;
-					p++;
+					p += 1;
 					break;
 				}
-				else if (tag->type == TZSP_TAG_PADDING) {
+				else if (tag_type == TZSP_TAG_PADDING) {
 					p++;
 				}
 				else {
-					if (p + sizeof(struct tzsp_tag) > end ||
-					    p + sizeof(struct tzsp_tag) + tag->length > end)
-					{
+					if (p + 2 > end) {
+						fprintf(stderr, "Malformed packet (truncated tag header)\n");
+						goto next_packet;
+					}
+
+					uint8_t tag_length = (uint8_t)*(p + 1);
+
+					if (tag_length == 0) {
+						fprintf(stderr, "Malformed packet (zero-length tag)\n");
+						goto next_packet;
+					}
+
+					if (p + 2 + tag_length > end) {
 						fprintf(stderr, "Malformed packet (truncated tag)\n");
 						goto next_packet;
 					}
-					p += sizeof(struct tzsp_tag) + tag->length;
+
+					p += 2 + tag_length;
 				}
 			}
 		}
@@ -739,17 +761,29 @@ next_packet:
 		if (my_pcap.verbose) {
 			fprintf(stderr,
 			        "\tpacket data begins at offset 0x%.4lx, length 0x%.4lx\n",
-			        (p - recv_buffer),
-			        readsz - (p - recv_buffer));
+					(ptrdiff_t)(p - recv_buffer),
+					(size_t)(readsz - (p - recv_buffer)));
 		}
 
 		// packet remains starting at p
+		ptrdiff_t payload_offset = p - recv_buffer;
+		if (payload_offset < 0 || (ssize_t)payload_offset > readsz) {
+			fprintf(stderr, "Internal error: invalid payload offset\n");
+			goto next_packet;
+		}
+
+		size_t payload_len_sz = (size_t)(readsz - payload_offset);
+		if (payload_len_sz > UINT32_MAX) {
+			fprintf(stderr, "Packet too large for pcap header\n");
+			goto next_packet;
+		}
+
 		struct pcap_pkthdr pcap_hdr = {
-			.caplen = readsz - (p - recv_buffer),
-			.len = readsz - (p - recv_buffer),
+			.caplen = (bpf_u_int32)payload_len_sz,
+			.len = (bpf_u_int32)payload_len_sz,
 		};
 		gettimeofday(&pcap_hdr.ts, NULL);
-		pcap_dump((unsigned char*) my_pcap.dumper, &pcap_hdr, (unsigned char *) p);
+		pcap_dump((u_char*) my_pcap.dumper, &pcap_hdr, (u_char*) p);
 
 		// since pcap_dump doesn't report errors directly, we have
 		// to approximate by checking its underlying file.
