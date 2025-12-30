@@ -313,25 +313,41 @@ static int rotate_dumper(struct my_pcap_t *my_pcap) {
 		return -1;
 	}
 
-	const char *rotated_filename = my_pcap->filename;
+	char *rotated_filename = NULL;
+	if (my_pcap->filename != NULL) {
+		rotated_filename = strdup(my_pcap->filename);
+		if (rotated_filename == NULL) {
+			free((void *)new_filename);
+			return -1;
+		}
+	}
+
 
 	if (my_pcap->verbose) {
 		fprintf(stderr, "Rotating output file: %s -> %s\n",
-		        rotated_filename, new_filename);
+			rotated_filename ? rotated_filename : "<none>",
+			new_filename ? new_filename : "<none>");
 	}
 
 	close_dumper(my_pcap);
 
 	if (open_dumper(my_pcap, new_filename) != 0) {
 		fprintf(stderr, "Error re-opening dumper\n");
+		free((void*) new_filename);
+		if (rotated_filename != NULL) {
+			free(rotated_filename);
+			rotated_filename = NULL;
+		}
 		return -1;
 	}
 
+	free((void*) new_filename);
+
 	if (my_pcap->postrotate_command != NULL) {
-		run_postrotate_command(my_pcap, rotated_filename);
+		run_postrotate_command(my_pcap, rotated_filename ? rotated_filename : "");
 	}
 
-	free((void*) rotated_filename);
+	if (rotated_filename != NULL) free(rotated_filename);
 
 	return 0;
 }
