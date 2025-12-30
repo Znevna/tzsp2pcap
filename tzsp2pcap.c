@@ -288,16 +288,48 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 		fprintf(stderr, "Opening output file: %s\n", filename);
 	}
 
-	pcap_dumper_t *dumper;
-	dumper = pcap_dump_open(my_pcap->pcap, filename);
-	if (!dumper) {
-		fprintf(stderr, "Could not open output file: %s\n", pcap_geterr(my_pcap->pcap));
+	if (filename == NULL) {
+		fprintf(stderr, "open_dumper: NULL filename\n");
 		return -1;
 	}
 
+	/*
+	 * Take ownership of the filename via a private copy so that
+	 * my_pcap always holds heap-allocated strings that can be
+	 * safely freed by rotation and at program exit.
+	 */
+	char *filename_copy = strdup(filename);
+	if (filename_copy == NULL) {
+		perror("open_dumper: strdup(filename)");
+		return -1;
+	}
+
+	pcap_dumper_t *dumper = pcap_dump_open(my_pcap->pcap, filename_copy);
+	if (!dumper) {
+		fprintf(stderr, "Could not open output file: %s\n", pcap_geterr(my_pcap->pcap));
+		free(filename_copy);
+		return -1;
+	}
+
+	FILE *fp = pcap_dump_file(dumper);
+	if (fp == NULL) {
+		fprintf(stderr, "pcap_dump_file() returned NULL\n");
+		pcap_dump_close(dumper);
+		free(filename_copy);
+		return -1;
+	}
+
+	if (my_pcap->dumper != NULL) {
+		pcap_dump_close(my_pcap->dumper);
+	}
+	if (my_pcap->filename != NULL) {
+		free((void *)my_pcap->filename);
+		my_pcap->filename = NULL;
+	}
+
 	my_pcap->dumper   = dumper;
-	my_pcap->filename = filename;
-	my_pcap->fp       = pcap_dump_file(my_pcap->dumper);
+	my_pcap->filename = filename_copy;
+	my_pcap->fp       = fp;
 
 	return 0;
 }
