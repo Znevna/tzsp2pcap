@@ -748,8 +748,16 @@ err_cleanup_tzsp:
 		cleanup_tzsp_listener(tzsp_listener);
 
 err_cleanup_pipe:
-	close(self_pipe_fds[0]);
-	close(self_pipe_fds[1]);
+	if (self_pipe_fds[0] >= 0) {
+		int fd0 = self_pipe_fds[0];
+		self_pipe_fds[0] = -1;
+		close(fd0);
+	}
+	if (self_pipe_fds[1] >= 0) {
+		int fd1 = self_pipe_fds[1];
+		self_pipe_fds[1] = -1;
+		close(fd1);
+	}
 
 exit:
 	if (my_pcap.filename_template)
