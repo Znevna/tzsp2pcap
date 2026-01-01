@@ -826,14 +826,6 @@ next_packet:
 		    recvfrom(tzsp_listener, recv_buffer, recv_buffer_size, 0,
 		             NULL, NULL);
 
-		if (my_pcap.verbose >= 2) {
-			fprintf(stderr,
-			        "read %zu bytes into buffer of size %d\n",
-			        (size_t)readsz, recv_buffer_size);
-		}
-
-		char *p = recv_buffer;
-
 		if (readsz == -1) {
 			perror("recv()");
 			break;
@@ -844,6 +836,13 @@ next_packet:
 			goto next_packet;
 		}
 
+		if (my_pcap.verbose >= 2) {
+			fprintf(stderr,
+				"read %zd bytes into buffer of size %d\n",
+				readsz, recv_buffer_size);
+		}
+
+		char *p = recv_buffer;
 		char *end = recv_buffer + readsz;
 
 		if (p + sizeof(struct tzsp_header) > end) {
@@ -860,7 +859,7 @@ next_packet:
 		if (dlt < 0) {
 			fprintf(stderr,
 				"Unsupported TZSP encapsulation type: %u\n",
-				ntohs(hdr->encap));
+				(unsigned)ntohs(hdr->encap));
 			goto next_packet;
 		}
 
@@ -886,11 +885,11 @@ next_packet:
 		if (my_pcap.verbose) {
 			fprintf(stderr,
 			        "header { version = %u, type = %s(%u), encap = 0x%.4x }\n",
-			        hdr->version,
+			        (unsigned)hdr->version,
 			        name_tag(hdr->type,
 			                 tzsp_type_names, ARRAYSZ(tzsp_type_names)),
-			        hdr->type,
-			        ntohs(hdr->encap));
+			        (unsigned)hdr->type,
+			        (unsigned)ntohs(hdr->encap));
 		}
 
 		char got_end_tag = 0;
@@ -916,7 +915,7 @@ next_packet:
 						"\ttag { type = %s(%u) }\n",
 						name_tag(tag_type,
 							tzsp_tag_names, ARRAYSZ(tzsp_tag_names)),
-						tag_type);
+						(unsigned)tag_type);
 				}
 
 				if (tag_type == TZSP_TAG_END) {
@@ -965,8 +964,8 @@ next_packet:
 
 		if (my_pcap.verbose) {
 			fprintf(stderr,
-			        "\tpacket data begins at offset 0x%td, length 0x%zu\n",
-					(ptrdiff_t)(p - recv_buffer),
+			        "\tpacket data begins at offset 0x%zx, length 0x%zx\n",
+					(size_t)(p - recv_buffer),
 					(size_t)(readsz - (p - recv_buffer)));
 		}
 
@@ -1002,8 +1001,8 @@ next_packet:
 
 		if (my_pcap.verbose) {
 			fprintf(stderr,
-					"\tpacket data begins at offset 0x%td, length 0x%zu\n",
-					(payload_offset),
+					"\tpacket data begins at offset 0x%zx, length 0x%zx\n",
+					payload_off_sz,
 					payload_len_sz);
 		}
 
