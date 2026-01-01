@@ -972,14 +972,25 @@ next_packet:
 
 		// packet remains starting at p
 		ptrdiff_t payload_offset = p - recv_buffer;
-		if (payload_offset < 0 || (ssize_t)payload_offset > readsz) {
+		if (payload_offset < 0) {
 			fprintf(stderr, "Internal error: invalid payload offset\n");
 			goto next_packet;
 		}
 
-		size_t payload_len_sz = (size_t)(readsz - payload_offset);
+		size_t payload_off_sz = (size_t)payload_offset;
+		if (payload_off_sz > (size_t)readsz) {
+			fprintf(stderr, "Internal error: invalid payload offset\n");
+			goto next_packet;
+		}
+
+		size_t payload_len_sz = (size_t)readsz - payload_off_sz;
 		if (payload_len_sz > UINT32_MAX) {
 			fprintf(stderr, "Packet too large for pcap header\n");
+			goto next_packet;
+		}
+
+		if (my_pcap.dumper == NULL) {
+			fprintf(stderr, "No open pcap dumper to write packet\n");
 			goto next_packet;
 		}
 
@@ -988,11 +999,19 @@ next_packet:
 			.len = (bpf_u_int32)payload_len_sz,
 		};
 		gettimeofday(&pcap_hdr.ts, NULL);
+
+		if (my_pcap.verbose) {
+			fprintf(stderr,
+					"\tpacket data begins at offset 0x%td, length 0x%zu\n",
+					(payload_offset),
+					payload_len_sz);
+		}
+
 		pcap_dump((u_char*) my_pcap.dumper, &pcap_hdr, (u_char*) p);
 
 		// since pcap_dump doesn't report errors directly, we have
 		// to approximate by checking its underlying file.
-		if (ferror(my_pcap.fp)) {
+		if (my_pcap.fp && ferror(my_pcap.fp)) {
 			fprintf(stderr, "error writing via pcap_dump\n");
 			break;
 		}
