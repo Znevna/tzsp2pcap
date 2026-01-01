@@ -19,6 +19,8 @@
 #include <sys/resource.h>
 
 #include <pcap/pcap.h>
+#include <stddef.h>
+#include <ctype.h>
 
 #define ARRAYSZ(x) (sizeof(x)/sizeof(*x))
 
@@ -466,7 +468,7 @@ static void usage(const char *program) {
 	        "tzsp2pcap: receive tazmen sniffer protocol over udp and\n"
 	        "produce pcap formatted output\n"
 	        "\n"
-	        "Usage %s [-h] [-v] [-f] [-p PORT] [-o FILENAME] [-s SIZE] [-G SECONDS] [-C SIZE] [-z CMD]\n"
+	        "Usage %s [-h] [-v] [-f] [-p PORT] [-o FILENAME] [-s SIZE] [-G SECONDS] [-C SIZE] [-z CMD] [-l FILEPATH]\n"
 	        "\t-h           Display this message\n"
 	        "\t-v           Verbose (repeat to increase up to -vv)\n"
 	        "\t-f           Flush output after every packet\n"
@@ -475,7 +477,8 @@ static void usage(const char *program) {
 	        "\t-s SIZE      Receive buffer size        (defaults to %u)\n"
 	        "\t-G SECONDS   Rotate file every n seconds\n"
 	        "\t-C FILESIZE  Rotate file when FILESIZE is reached\n"
-	        "\t-z CMD       Post-rotate command to execute\n",
+	        "\t-z CMD       Post-rotate command to execute\n"
+	        "\t-l FILEPATH  Write log messages to FILEPATH\n",
 	        program,
 	        DEFAULT_LISTEN_PORT,
 	        DEFAULT_RECV_BUFFER_SIZE);
@@ -508,6 +511,7 @@ int main(int argc, char **argv) {
 
 	int         recv_buffer_size  = DEFAULT_RECV_BUFFER_SIZE;
 	uint16_t    listen_port       = DEFAULT_LISTEN_PORT;
+	const char *log_path          = NULL;
 
 	struct my_pcap_t my_pcap = {
 	    .pcap                    = NULL,
@@ -533,7 +537,7 @@ int main(int argc, char **argv) {
 	char flush_every_packet = 0;
 
 	int ch;
-	while ((ch = getopt(argc, argv, "fp:o:s:C:G:z:vh")) != -1) {
+	while ((ch = getopt(argc, argv, "fp:o:s:C:G:z:l:vh")) != -1) {
 		switch (ch) {
 		case 'f':
 			flush_every_packet = 1;
@@ -663,6 +667,28 @@ int main(int argc, char **argv) {
 			}
 			break;
 
+		case 'l': {
+			log_path = optarg;
+
+			const char *p = log_path;
+			while (*p && isspace((unsigned char)*p)) {
+				p++;
+			}
+			if (*p == '\0') {
+				fprintf(stderr, "Invalid -l filepath provided for logging\n");
+				exit(EXIT_FAILURE);
+			}
+
+			FILE *log_file = fopen(log_path, "a");
+			if (!log_file) {
+				fprintf(stderr, "Cannot open file path '%s' for writing\n", log_path);
+				perror("fopen");
+				exit(EXIT_FAILURE);
+			}
+			fclose(log_file);
+			break;
+		}
+
 		default:
 			retval = -1;
 			/* FALLTHRU */
@@ -670,6 +696,14 @@ int main(int argc, char **argv) {
 		case 'h':
 			usage(argv[0]);
 			goto exit;
+		}
+	}
+
+	if (log_path) {
+		FILE *log_file = freopen(log_path, "a", stderr);
+		if (!log_file) {
+			perror("freopen");
+			exit(EXIT_FAILURE);
 		}
 	}
 
