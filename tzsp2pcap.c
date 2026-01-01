@@ -396,8 +396,18 @@ static int rotate_dumper(struct my_pcap_t *my_pcap) {
 static int maybe_rotate(struct my_pcap_t *my_pcap) {
 
 	if (my_pcap->rotation_size_threshold > 0) {
+		if (my_pcap->dumper == NULL) return 0;
+
 #ifdef HAVE_PCAP_FTELL64
 		int64_t size = pcap_dump_ftell64(my_pcap->dumper);
+		if (size == -1) {
+			perror("pcap_dump_ftell64");
+			return errno;
+		}
+		if (size > (int64_t)my_pcap->rotation_size_threshold) {
+			++my_pcap->rotation_count;
+			return rotate_dumper(my_pcap);
+		}
 #else
 		/*
 		 * XXX - this only handles a rotation_size_threshold value >
@@ -406,11 +416,15 @@ static int maybe_rotate(struct my_pcap_t *my_pcap) {
 		 * of libpcap with pcap_dump_ftell64().
 		 */
 		long size = pcap_dump_ftell(my_pcap->dumper);
-#endif
-		if (size > my_pcap->rotation_size_threshold) {
+		if (size == -1) {
+			perror("pcap_dump_ftell");
+			return errno;
+		}
+		if (size > (long)my_pcap->rotation_size_threshold) {
 			++my_pcap->rotation_count;
 			return rotate_dumper(my_pcap);
 		}
+#endif
 	}
 
 	else if (my_pcap->rotation_interval > 0) {
