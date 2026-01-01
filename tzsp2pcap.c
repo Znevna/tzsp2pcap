@@ -358,11 +358,11 @@ static int rotate_dumper(struct my_pcap_t *my_pcap) {
 	if (my_pcap->filename != NULL) {
 		rotated_filename = strdup(my_pcap->filename);
 		if (rotated_filename == NULL) {
+			perror("rotate_dumper: strdup failed");
 			free((void *)new_filename);
 			return -1;
 		}
 	}
-
 
 	if (my_pcap->verbose) {
 		fprintf(stderr, "Rotating output file: %s -> %s\n",
@@ -746,6 +746,12 @@ int main(int argc, char **argv) {
 		if ((my_pcap.rotation_size_threshold > 0 || my_pcap.rotation_interval > 0)) {
 			struct stat fp_stat;
 
+			if (my_pcap.fp == NULL) {
+				fprintf(stderr, "Output file pointer is NULL\n");
+				retval = -1;
+				goto err_cleanup_pcap;
+			}
+
 			if (fstat(fileno(my_pcap.fp), &fp_stat) == -1) {
 				perror("fstat");
 				retval = errno;
@@ -1037,17 +1043,12 @@ err_cleanup_pcap:
 	}
 	shutting_down = 1;
 
-	if (my_pcap.dumper) {
-		pcap_dump_close(my_pcap.dumper);
-		my_pcap.dumper = NULL;
-	}
+	close_dumper(&my_pcap);
 
-	if (my_pcap.fp) {
+	if (my_pcap.pcap) {
+		pcap_close(my_pcap.pcap);
 		my_pcap.fp = NULL;
 	}
-
-	if (my_pcap.pcap)
-		pcap_close(my_pcap.pcap);
 
 err_cleanup_tzsp:
 	if (tzsp_listener != -1)
