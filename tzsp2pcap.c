@@ -814,7 +814,7 @@ next_packet:
 
 		if (my_pcap.verbose >= 2) {
 			fprintf(stderr,
-			        "read 0x%.4zx bytes into buffer of size 0x%.4x\n",
+			        "read %zu bytes into buffer of size %d\n",
 			        (size_t)readsz, recv_buffer_size);
 		}
 
@@ -951,7 +951,7 @@ next_packet:
 
 		if (my_pcap.verbose) {
 			fprintf(stderr,
-			        "\tpacket data begins at offset 0x%.4lx, length 0x%.4lx\n",
+			        "\tpacket data begins at offset 0x%td, length 0x%zu\n",
 					(ptrdiff_t)(p - recv_buffer),
 					(size_t)(readsz - (p - recv_buffer)));
 		}
