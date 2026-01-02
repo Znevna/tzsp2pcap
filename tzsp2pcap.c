@@ -991,14 +991,15 @@ next_packet:
 		}
 
 		/* If DLT changed, reopen pcap dumper */
-		if (pcap_datalink(my_pcap.pcap) != dlt) {
-			pcap_close(my_pcap.pcap);
-			my_pcap.pcap = pcap_open_dead(dlt, recv_buffer_size);
-			if (!my_pcap.pcap) {
+		if (my_pcap.pcap && pcap_datalink(my_pcap.pcap) != dlt) {
+			pcap_t *new_pcap = pcap_open_dead(dlt, recv_buffer_size);
+			if (!new_pcap) {
 				fprintf(stderr, "Could not reinitialize pcap for DLT %d\n", dlt);
 				retval = -1;
 				goto err_cleanup_pcap;
 			}
+			pcap_close(my_pcap.pcap);
+			my_pcap.pcap = new_pcap;
 			/* Reopen dumper with new DLT */
 			if (rotate_dumper(&my_pcap) != 0) {
 				fprintf(stderr, "Error rotating dumper after DLT change\n");
@@ -1168,6 +1169,7 @@ err_cleanup_pcap:
 
 	if (my_pcap.pcap) {
 		pcap_close(my_pcap.pcap);
+		my_pcap.pcap = NULL;
 		my_pcap.fp = NULL;
 	}
 
