@@ -450,7 +450,7 @@ static int maybe_rotate(struct my_pcap_t *my_pcap) {
 		int64_t size = pcap_dump_ftell64(my_pcap->dumper);
 		if (size == -1) {
 			perror("pcap_dump_ftell64");
-			return errno;
+			return -1;
 		}
 		if (size > (int64_t)my_pcap->rotation_size_threshold) {
 			++my_pcap->rotation_count;
@@ -466,7 +466,7 @@ static int maybe_rotate(struct my_pcap_t *my_pcap) {
 		long size = pcap_dump_ftell(my_pcap->dumper);
 		if (size == -1) {
 			perror("pcap_dump_ftell");
-			return errno;
+			return -1;
 		}
 		if (size > (long)my_pcap->rotation_size_threshold) {
 			++my_pcap->rotation_count;
@@ -482,7 +482,7 @@ static int maybe_rotate(struct my_pcap_t *my_pcap) {
 		/* Get the current time */
 		if ((now = time(NULL)) == (time_t) -1) {
 			perror("Can't get current_time");
-			return errno;
+			return -1;
 		}
 		if (now - my_pcap->rotation_start_time >= my_pcap->rotation_interval) {
 			my_pcap->rotation_start_time = now;
