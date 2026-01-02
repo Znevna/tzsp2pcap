@@ -504,10 +504,6 @@ static inline const char* name_tag(int tag,
 	}
 }
 
-static inline int max(int x, int y) {
-	return (x > y) ? x : y;
-}
-
 static void usage(const char *program) {
 	fprintf(stderr,
 	        "\n"
@@ -612,6 +608,7 @@ int main(int argc, char **argv) {
 		case 'o':
 			if (my_pcap.filename_template) {
 				free((void*) my_pcap.filename_template);
+				my_pcap.filename_template = NULL;
 			}
 			my_pcap.filename_template = strdup(optarg);
 			if (my_pcap.filename_template == NULL) {
@@ -704,6 +701,8 @@ int main(int argc, char **argv) {
 		}
 
 		case 'z':
+			if (my_pcap.postrotate_command)
+				free((void *)my_pcap.postrotate_command);
 			my_pcap.postrotate_command = strdup(optarg);
 			if (my_pcap.postrotate_command == NULL) {
 				perror("strdup(-z cmd)");
