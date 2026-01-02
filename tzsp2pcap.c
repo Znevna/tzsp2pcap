@@ -164,8 +164,17 @@ static void cleanup_tzsp_listener(int socket) {
 }
 
 static void trap_signal(int signum) {
-	if (signal(signum, request_terminate_handler) == SIG_IGN)
-		signal(signum, SIG_IGN);
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = request_terminate_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	struct sigaction old;
+	if (sigaction(signum, &sa, &old) == 0) {
+		if (old.sa_handler == SIG_IGN) {
+			sigaction(signum, &old, NULL);
+		}
+	}
 }
 
 static void catch_child(int sig_num) {
@@ -771,7 +780,12 @@ int main(int argc, char **argv) {
 	trap_signal(SIGINT);
 	trap_signal(SIGHUP);
 	trap_signal(SIGTERM);
-	signal(SIGCHLD, catch_child);
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = catch_child;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	sigaction(SIGCHLD, &sa, NULL);
 
 	int tzsp_listener = setup_tzsp_listener(listen_port);
 	if (tzsp_listener == -1) {
