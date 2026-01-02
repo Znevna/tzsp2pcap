@@ -214,10 +214,11 @@ static const char *get_filename(struct my_pcap_t *my_pcap) {
 		 * format strings for strftime.
 		 */
 		struct tm *local_tm;
+		struct tm local_tm_buf;
 
 		/* Convert rotation_start_time to a format accepted by strftime */
-		if ((local_tm = localtime(&my_pcap->rotation_start_time)) == NULL) {
-			perror("localtime");
+		if ((local_tm = localtime_r(&my_pcap->rotation_start_time, &local_tm_buf)) == NULL) {
+			perror("localtime_r");
 			return NULL;
 		}
 
