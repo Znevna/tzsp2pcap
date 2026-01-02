@@ -119,11 +119,20 @@ static void request_terminate_handler(int signum) {
 static int setup_tzsp_listener(uint16_t listen_port) {
 	int result;
 
-	int sockfd = socket(PF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+	#ifdef SOCK_CLOEXEC
+		int sockfd = socket(PF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+	#else
+		int sockfd = socket(PF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+	#endif
 	if (sockfd == -1) {
 		perror("socket()");
 		goto err_exit;
 	}
+
+	#ifndef SOCK_CLOEXEC
+		int fdflags = fcntl(sockfd, F_GETFD, 0);
+		if (fdflags != -1) fcntl(sockfd, F_SETFD, fdflags | FD_CLOEXEC);
+	#endif
 
 	int on = 0;
 	result = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
@@ -347,6 +356,14 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 		pcap_dump_close(dumper);
 		free(filename_copy);
 		return -1;
+	}
+
+	int dumper_fd = fileno(fp);
+	if (dumper_fd != -1) {
+		int fdflags = fcntl(dumper_fd, F_GETFD, 0);
+		if (fdflags != -1) {
+			fcntl(dumper_fd, F_SETFD, fdflags | FD_CLOEXEC);
+		}
 	}
 
 	if (my_pcap->dumper != NULL) {
