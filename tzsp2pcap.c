@@ -101,8 +101,18 @@ static void request_terminate_handler(int signum) {
 	terminate_requested = 1;
 
 	char data = 0;
-	if (self_pipe_fds[1] >= 0) {
-		if (!shutting_down) (void)write(self_pipe_fds[1], &data, sizeof(data));
+	if (self_pipe_fds[1] >= 0 && !shutting_down) {
+		ssize_t r = write(self_pipe_fds[1], &data, sizeof(data));
+		if (r == -1) {
+			/* Transient/expected failures (EAGAIN/EWOULDBLOCK/EINTR): drop notification. */
+			if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+				/* Irrecoverable error on the pipe: close it to avoid repeated failures. */
+				int saved_errno = errno;
+				close(self_pipe_fds[1]);
+				self_pipe_fds[1] = -1;
+				errno = saved_errno;
+			}
+		}
 	}
 }
 
@@ -165,8 +175,17 @@ static void catch_child(int sig_num) {
 	child_exited = 1;
 
 	char data = 0;
-	if (self_pipe_fds[1] >= 0) {
-		if (!shutting_down) (void)write(self_pipe_fds[1], &data, sizeof(data));
+	if (self_pipe_fds[1] >= 0 && !shutting_down) {
+		ssize_t r = write(self_pipe_fds[1], &data, sizeof(data));
+		if (r == -1) {
+			/* Ignore transient errors (pipe full or interrupted). */
+			if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+				int saved_errno = errno;
+				close(self_pipe_fds[1]);
+				self_pipe_fds[1] = -1;
+				errno = saved_errno;
+			}
+		}
 	}
 }
 
@@ -722,17 +741,27 @@ int main(int argc, char **argv) {
 		goto exit;
 	}
 
-	/* Make the read end of the self-pipe non-blocking to avoid deadlocks. */
-	{
-		int flags = fcntl(self_pipe_fds[0], F_GETFL, 0);
+	/* Make both ends of the self-pipe non-blocking and set close-on-exec. */
+	for (int _i = 0; _i < 2; ++_i) {
+		int flags = fcntl(self_pipe_fds[_i], F_GETFL, 0);
 		if (flags == -1) {
 			perror("fcntl(F_GETFL) on self-pipe");
 			retval = errno;
 			goto err_cleanup_pipe;
 		}
-
-		if (fcntl(self_pipe_fds[0], F_SETFL, flags | O_NONBLOCK) == -1) {
+		if (fcntl(self_pipe_fds[_i], F_SETFL, flags | O_NONBLOCK) == -1) {
 			perror("fcntl(O_NONBLOCK) on self-pipe");
+			retval = errno;
+			goto err_cleanup_pipe;
+		}
+		flags = fcntl(self_pipe_fds[_i], F_GETFD, 0);
+		if (flags == -1) {
+			perror("fcntl(F_GETFD) on self-pipe");
+			retval = errno;
+			goto err_cleanup_pipe;
+		}
+		if (fcntl(self_pipe_fds[_i], F_SETFD, flags | FD_CLOEXEC) == -1) {
+			perror("fcntl(F_SETFD) on self-pipe");
 			retval = errno;
 			goto err_cleanup_pipe;
 		}
@@ -819,12 +848,26 @@ next_packet:
 		}
 
 		FD_ZERO(&read_set);
-		FD_SET(tzsp_listener, &read_set);
-		FD_SET(self_pipe_fds[0], &read_set);
-		if (select(max(tzsp_listener, self_pipe_fds[0]) + 1,
-		           &read_set, NULL, NULL,
-		           NULL) == -1)
-		{
+
+		int maxfd = -1;
+
+		if (tzsp_listener >= 0 && tzsp_listener < FD_SETSIZE) {
+			FD_SET(tzsp_listener, &read_set);
+			if (tzsp_listener > maxfd) maxfd = tzsp_listener;
+		}
+
+		if (self_pipe_fds[0] >= 0 && self_pipe_fds[0] < FD_SETSIZE) {
+			FD_SET(self_pipe_fds[0], &read_set);
+			if (self_pipe_fds[0] > maxfd) maxfd = self_pipe_fds[0];
+		}
+
+		if (maxfd == -1) {
+			struct timespec ts = { 0, 100000000 }; /* 100ms */
+			nanosleep(&ts, NULL);
+			continue;
+		}
+
+		if (select(maxfd + 1, &read_set, NULL, NULL, NULL) == -1) {
 			if (errno == EINTR) continue;
 			perror("select");
 			retval = errno;
@@ -833,11 +876,21 @@ next_packet:
 
 		if (FD_ISSET(self_pipe_fds[0], &read_set)) {
 			/* Drain the self-pipe to clear wake-up notifications. */
-			char buf[64];
-			ssize_t r;
-			do {
-				r = read(self_pipe_fds[0], buf, sizeof(buf));
-			} while (r > 0);
+			{
+				char buf[64];
+				ssize_t r;
+				for (;;) {
+					r = read(self_pipe_fds[0], buf, sizeof(buf));
+					if (r > 0) continue;
+					if (r == -1) {
+						if (errno == EINTR) continue;
+						if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+						perror("read(self-pipe)");
+						break;
+					}
+					break;
+				}
+			}
 
 			/* If a terminate request was recorded, exit the loop. */
 			if (terminate_requested) {
@@ -860,7 +913,9 @@ next_packet:
 			continue;
 		}
 
-		assert(FD_ISSET(tzsp_listener, &read_set));
+		if (!FD_ISSET(tzsp_listener, &read_set)) {
+			goto next_packet;
+		}
 
 		ssize_t readsz =
 		    recvfrom(tzsp_listener, recv_buffer, recv_buffer_size, 0,
