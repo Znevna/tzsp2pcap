@@ -957,6 +957,11 @@ next_packet:
 			break;
 		}
 
+		if (readsz > recv_buffer_size) {
+			fprintf(stderr, "Received oversized UDP packet\n");
+			goto next_packet;
+		}
+
 		if (readsz == 0) {
 			fprintf(stderr, "Zero-length UDP packet ignored\n");
 			goto next_packet;
