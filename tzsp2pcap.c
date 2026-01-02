@@ -319,7 +319,7 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
 		        strerror(errno));
     }
 	free(cmd_filename);
-	exit(1);
+	_exit(127);
 }
 
 static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
