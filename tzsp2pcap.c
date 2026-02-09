@@ -1,8 +1,12 @@
+/*
+ * tzsp2pcap for Windows
+ * Fixed for MinGW/MSYS2 compilation
+ */
+
 #include <sys/types.h>
-#include <sys/wait.h>
-#include <sys/param.h>
 #include <sys/stat.h>
-#include <unistd.h>
+#include <stdint.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
@@ -10,17 +14,69 @@
 #include <signal.h>
 #include <string.h>
 #include <time.h>
-
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <netinet/in.h>
-
-#include <sys/time.h>
-#include <sys/resource.h>
-
-#include <pcap/pcap.h>
 #include <stddef.h>
 #include <ctype.h>
+
+/* --- Windows Compatibility Layer --- */
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #include <windows.h>
+    #include <process.h> /* For _spawnlp */
+    #include <io.h>
+    
+    /* MinGW/MSYS2 specific includes for command line parsing */
+    #include <unistd.h>
+    #include <getopt.h>
+
+    /* Windows mappings for standard POSIX functions */
+    #define close closesocket
+    #define sleep(x) Sleep((x)*1000)
+    
+    #ifndef PATH_MAX
+        #define PATH_MAX MAX_PATH
+    #endif
+
+    /* Windows does not have gettimeofday, so we implement a shim for PCAP timestamps */
+    static int gettimeofday(struct timeval *tv, void *tz) {
+        if (tv) {
+            FILETIME ft;
+            unsigned __int64 tmpres = 0;
+            GetSystemTimeAsFileTime(&ft);
+            tmpres |= ft.dwHighDateTime;
+            tmpres <<= 32;
+            tmpres |= ft.dwLowDateTime;
+            tmpres /= 10;
+            tmpres -= 11644473600000000ULL; /* Convert 1601 epoch to 1970 epoch */
+            tv->tv_sec = (long)(tmpres / 1000000UL);
+            tv->tv_usec = (long)(tmpres % 1000000UL);
+        }
+        return 0;
+    }
+
+    /* Windows does not have localtime_r, use the thread-safe standard C equivalent */
+    static struct tm *localtime_r(const time_t *timer, struct tm *buf) {
+        if (localtime_s(buf, timer) == 0) return buf;
+        return NULL;
+    }
+
+    /* Windows select() cannot check pipes, so we rely on timeout loops instead of self-pipes */
+    #define USE_SELECT_TIMEOUT 1
+
+#else
+    /* Original POSIX Includes */
+    #include <sys/wait.h>
+    #include <sys/param.h>
+    #include <unistd.h>
+    #include <sys/socket.h>
+    #include <sys/select.h>
+    #include <netinet/in.h>
+    #include <sys/time.h>
+    #include <sys/resource.h>
+#endif
+/* --- End Windows Compatibility Layer --- */
+
+#include <pcap/pcap.h>
 
 #define ARRAYSZ(x) (sizeof(x)/sizeof(*x))
 
@@ -87,7 +143,9 @@ struct my_pcap_t {
 	const char *postrotate_command;
 };
 
+#ifndef _WIN32
 static int self_pipe_fds[2] = { -1, -1 };
+#endif
 
 /* Flags modified only in signal handlers; read in main loop. */
 static volatile sig_atomic_t terminate_requested = 0;
@@ -100,6 +158,8 @@ static void request_terminate_handler(int signum) {
 	/* Just record the request and wake the main loop. */
 	terminate_requested = 1;
 
+#ifndef _WIN32
+    /* Linux: Write to pipe to wake select() */
 	char data = 0;
 	if (self_pipe_fds[1] >= 0 && !shutting_down) {
 		ssize_t r = write(self_pipe_fds[1], &data, sizeof(data));
@@ -114,36 +174,38 @@ static void request_terminate_handler(int signum) {
 			}
 		}
 	}
+#endif
 }
 
 static int setup_tzsp_listener(uint16_t listen_port) {
 	int result;
 
-	#ifdef SOCK_CLOEXEC
+	#if defined(SOCK_CLOEXEC) && !defined(_WIN32)
 		int sockfd = socket(PF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
 	#else
-		int sockfd = socket(PF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+		int sockfd = (int)socket(PF_INET6, SOCK_DGRAM, IPPROTO_UDP);
 	#endif
 	if (sockfd == -1) {
 		perror("socket()");
 		goto err_exit;
 	}
 
-	#ifndef SOCK_CLOEXEC
+	#if !defined(SOCK_CLOEXEC) && !defined(_WIN32)
 		int fdflags = fcntl(sockfd, F_GETFD, 0);
 		if (fdflags != -1) fcntl(sockfd, F_SETFD, fdflags | FD_CLOEXEC);
 	#endif
 
 	int on = 0;
+	/* Windows setsockopt expects char* for the value */
 	result = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
-	                    (void*)&on, sizeof(on));
+	                    (char*)&on, sizeof(on));
 	if (result == -1) {
 		perror("setsockopt()");
 		goto err_close;
 	}
 
 	struct sockaddr_in6 listen_address = {
-		#ifdef SIN6_LEN
+		#if defined(SIN6_LEN) && !defined(_WIN32)
 		.sin6_len = sizeof(struct sockaddr_in6),
 		#endif
 
@@ -173,6 +235,9 @@ static void cleanup_tzsp_listener(int socket) {
 }
 
 static void trap_signal(int signum) {
+#ifdef _WIN32
+    signal(signum, request_terminate_handler);
+#else
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = request_terminate_handler;
@@ -184,6 +249,7 @@ static void trap_signal(int signum) {
 			sigaction(signum, &old, NULL);
 		}
 	}
+#endif
 }
 
 static void catch_child(int sig_num) {
@@ -192,6 +258,7 @@ static void catch_child(int sig_num) {
 	/* Record that a child has exited and wake the main loop. */
 	child_exited = 1;
 
+#ifndef _WIN32
 	char data = 0;
 	if (self_pipe_fds[1] >= 0 && !shutting_down) {
 		ssize_t r = write(self_pipe_fds[1], &data, sizeof(data));
@@ -205,6 +272,7 @@ static void catch_child(int sig_num) {
 			}
 		}
 	}
+#endif
 }
 
 static const char *get_filename(struct my_pcap_t *my_pcap) {
@@ -267,7 +335,6 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
 		fprintf(stderr, "Running post-rotate command: %s\n", my_pcap->postrotate_command);
 	}
 
-	pid_t child;
 	char *cmd_filename = NULL;
 
 	if (filename != NULL) {
@@ -278,6 +345,23 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
 		}
 	}
 
+#ifdef _WIN32
+    /* Windows: Use _spawnlp with _P_NOWAIT for asynchronous execution (replaces fork/exec) */
+    intptr_t ret = _spawnlp(_P_NOWAIT, my_pcap->postrotate_command,
+                            my_pcap->postrotate_command,
+                            cmd_filename ? cmd_filename : "",
+                            NULL);
+    if (ret == -1) {
+        fprintf(stderr,
+		        "after_logrotate: _spawnlp(%s, %s) failed: %s\n",
+		        my_pcap->postrotate_command,
+				cmd_filename ? cmd_filename : "",
+		        strerror(errno));
+    }
+    free(cmd_filename);
+#else
+    /* Linux: Fork/Exec */
+	pid_t child;
 	child = fork();
 	if (child == -1) {
 		perror("run_postrotate_command: fork failed");
@@ -321,6 +405,7 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
     }
 	free(cmd_filename);
 	_exit(127);
+#endif
 }
 
 static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
@@ -359,6 +444,7 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 		return -1;
 	}
 
+#ifndef _WIN32
 	int dumper_fd = fileno(fp);
 	if (dumper_fd != -1) {
 		int fdflags = fcntl(dumper_fd, F_GETFD, 0);
@@ -366,6 +452,7 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 			fcntl(dumper_fd, F_SETFD, fdflags | FD_CLOEXEC);
 		}
 	}
+#endif
 
 	if (my_pcap->dumper != NULL) {
 		pcap_dump_close(my_pcap->dumper);
@@ -463,7 +550,7 @@ static int maybe_rotate(struct my_pcap_t *my_pcap) {
 		 * Windows) or LLP64 (64-bit Windows) would require a version
 		 * of libpcap with pcap_dump_ftell64().
 		 */
-		long size = pcap_dump_ftell(my_pcap->dumper);
+		long size = (long)pcap_dump_ftell(my_pcap->dumper);
 		if (size == -1) {
 			perror("pcap_dump_ftell");
 			return -1;
@@ -549,7 +636,18 @@ static int tzsp_encap_to_dlt(uint16_t encap)
 }
 
 int main(int argc, char **argv) {
-	int retval = 0;
+    int retval = 0;
+
+#ifdef _WIN32
+    /* Initialize Winsock before doing anything network related */
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        fprintf(stderr, "WSAStartup failed\n");
+        return 1;
+    }
+    /* Prevent Windows from corrupting binary output on stdout */
+    _setmode(_fileno(stdout), _O_BINARY); 
+#endif
 
 	int         recv_buffer_size  = DEFAULT_RECV_BUFFER_SIZE;
 	uint16_t    listen_port       = DEFAULT_LISTEN_PORT;
@@ -761,6 +859,8 @@ int main(int argc, char **argv) {
 		goto exit;
 	}
 
+#ifndef _WIN32
+    /* Only setup self-pipe on Linux/Unix */
 	if (pipe(self_pipe_fds) == -1) {
 		perror("Creating self-wake pipe\n");
 		retval = errno;
@@ -792,17 +892,23 @@ int main(int argc, char **argv) {
 			goto err_cleanup_pipe;
 		}
 	}
+#endif
 
 	/* Set up signal handlers only after the self-pipe is ready. */
 	trap_signal(SIGINT);
+#ifndef _WIN32
 	trap_signal(SIGHUP);
+#endif
 	trap_signal(SIGTERM);
+    
+#ifndef _WIN32
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = catch_child;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESTART;
 	sigaction(SIGCHLD, &sa, NULL);
+#endif
 
 	int tzsp_listener = setup_tzsp_listener(listen_port);
 	if (tzsp_listener == -1) {
@@ -870,7 +976,8 @@ int main(int argc, char **argv) {
 		goto err_cleanup_pcap;
 	}
 
-	while (1) {
+    /* Main loop condition checks terminate_requested explicitly */
+	while (!terminate_requested) {
 		fd_set read_set;
 
 next_packet:
@@ -882,29 +989,38 @@ next_packet:
 
 		int maxfd = -1;
 
-		if (tzsp_listener >= 0 && tzsp_listener < FD_SETSIZE) {
+		if (tzsp_listener >= 0) {
 			FD_SET(tzsp_listener, &read_set);
 			if (tzsp_listener > maxfd) maxfd = tzsp_listener;
 		}
 
+#ifndef _WIN32
 		if (self_pipe_fds[0] >= 0 && self_pipe_fds[0] < FD_SETSIZE) {
 			FD_SET(self_pipe_fds[0], &read_set);
 			if (self_pipe_fds[0] > maxfd) maxfd = self_pipe_fds[0];
 		}
-
-		if (maxfd == -1) {
-			struct timespec ts = { 0, 100000000 }; /* 100ms */
-			nanosleep(&ts, NULL);
-			continue;
-		}
-
+        
+        /* Linux: Infinite timeout, wakes on pipe or packet */
 		if (select(maxfd + 1, &read_set, NULL, NULL, NULL) == -1) {
 			if (errno == EINTR) continue;
 			perror("select");
 			retval = errno;
 			break;
 		}
+#else
+        /* Windows: Select with timeout to poll for shutdown signals */
+        struct timeval tv = { 0, 100000 }; /* 100ms */
+        int sret = select(maxfd + 1, &read_set, NULL, NULL, &tv);
+        if (sret == 0) continue; /* Timeout, check terminate_requested loop condition */
+        if (sret == -1) {
+            if (WSAGetLastError() == WSAEINTR) continue;
+            fprintf(stderr, "select failed: %d\n", WSAGetLastError());
+            retval = -1;
+            break;
+        }
+#endif
 
+#ifndef _WIN32
 		if (FD_ISSET(self_pipe_fds[0], &read_set)) {
 			/* Drain the self-pipe to clear wake-up notifications. */
 			{
@@ -943,6 +1059,7 @@ next_packet:
 			/* Continue to next select() without processing packets. */
 			continue;
 		}
+#endif
 
 		if (!FD_ISSET(tzsp_listener, &read_set)) {
 			goto next_packet;
@@ -1183,6 +1300,7 @@ err_cleanup_tzsp:
 
 err_cleanup_pipe:
 	shutting_down = 1;
+#ifndef _WIN32
 	if (self_pipe_fds[0] >= 0) {
 		int fd0 = self_pipe_fds[0];
 		self_pipe_fds[0] = -1;
@@ -1193,6 +1311,7 @@ err_cleanup_pipe:
 		self_pipe_fds[1] = -1;
 		close(fd1);
 	}
+#endif
 
 exit:
 	if (my_pcap.filename_template)
@@ -1203,6 +1322,10 @@ exit:
 
 	if (my_pcap.postrotate_command)
 		free((void*) my_pcap.postrotate_command);
+
+#ifdef _WIN32
+    WSACleanup();
+#endif
 
 	return retval;
 }
