@@ -39,6 +39,7 @@
 
 	/* Windows does not have gettimeofday, so we implement a shim for PCAP timestamps */
 	static int gettimeofday(struct timeval *tv, void *tz) {
+		(void)tz; /* Fix unused parameter warning */
 		if (tv) {
 			FILETIME ft;
 			unsigned __int64 tmpres = 0;
@@ -59,9 +60,6 @@
 		if (localtime_s(buf, timer) == 0) return buf;
 		return NULL;
 	}
-
-	/* Windows select() cannot check pipes, so we rely on timeout loops instead of self-pipes */
-	#define USE_SELECT_TIMEOUT 1
 
 #else
 	/* Original POSIX Includes */
@@ -196,9 +194,15 @@ static int setup_tzsp_listener(uint16_t listen_port) {
 	#endif
 
 	int on = 0;
-	/* Windows setsockopt expects char* for the value */
-	result = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
-						(char*)&on, sizeof(on));
+	/* Windows setsockopt expects char* for the value.
+	 * Warning fix: cast sockfd to SOCKET. 
+	 */
+	#ifdef _WIN32
+	result = setsockopt((SOCKET)sockfd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&on, sizeof(on));
+	#else
+	result = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&on, sizeof(on));
+	#endif
+
 	if (result == -1) {
 		perror("setsockopt()");
 		goto err_close;
@@ -215,7 +219,13 @@ static int setup_tzsp_listener(uint16_t listen_port) {
 		.sin6_addr = in6addr_any,
 	};
 
+	/* Warning fix: cast sockfd to SOCKET */
+	#ifdef _WIN32
+	result = bind((SOCKET)sockfd, (struct sockaddr*) &listen_address, sizeof(listen_address));
+	#else
 	result = bind(sockfd, (struct sockaddr*) &listen_address, sizeof(listen_address));
+	#endif
+	
 	if (result == -1) {
 		perror("bind()");
 		goto err_close;
@@ -224,14 +234,24 @@ static int setup_tzsp_listener(uint16_t listen_port) {
 	return sockfd;
 
 err_close:
+	/* Warning fix: cast to SOCKET */
+	#ifdef _WIN32
+	close((SOCKET)sockfd);
+	#else
 	close(sockfd);
+	#endif
 
 err_exit:
 	return -1;
 }
 
 static void cleanup_tzsp_listener(int socket) {
+	/* Warning fix: cast to SOCKET */
+	#ifdef _WIN32
+	close((SOCKET)socket);
+	#else
 	close(socket);
+	#endif
 }
 
 static void trap_signal(int signum) {
@@ -970,7 +990,8 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	recv_buffer = malloc(recv_buffer_size);
+	/* Warning fix: cast recv_buffer_size to size_t */
+	recv_buffer = malloc((size_t)recv_buffer_size);
 	if (!recv_buffer) {
 		fprintf(stderr, "Could not allocate receive buffer of %i bytes\n",
 				recv_buffer_size);
@@ -992,7 +1013,13 @@ next_packet:
 		int maxfd = -1;
 
 		if (tzsp_listener >= 0) {
+			/* Warning fix: cast tzsp_listener to SOCKET for FD_SET */
+			#ifdef _WIN32
+			FD_SET((SOCKET)tzsp_listener, &read_set);
+			#else
 			FD_SET(tzsp_listener, &read_set);
+			#endif
+
 			if (tzsp_listener > maxfd) maxfd = tzsp_listener;
 		}
 
@@ -1067,9 +1094,16 @@ next_packet:
 			goto next_packet;
 		}
 
+		/* Warning fix: cast tzsp_listener to SOCKET for recvfrom */
+		#ifdef _WIN32
+		ssize_t readsz =
+			recvfrom((SOCKET)tzsp_listener, recv_buffer, recv_buffer_size, 0,
+					 NULL, NULL);
+		#else
 		ssize_t readsz =
 			recvfrom(tzsp_listener, recv_buffer, recv_buffer_size, 0,
 					 NULL, NULL);
+		#endif
 
 		if (readsz == -1) {
 			perror("recv()");
