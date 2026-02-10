@@ -19,60 +19,60 @@
 
 /* --- Windows Compatibility Layer --- */
 #ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-    #include <windows.h>
-    #include <process.h> /* For _spawnlp */
-    #include <io.h>
-    
-    /* MinGW/MSYS2 specific includes for command line parsing */
-    #include <unistd.h>
-    #include <getopt.h>
+	#include <winsock2.h>
+	#include <ws2tcpip.h>
+	#include <windows.h>
+	#include <process.h> /* For _spawnlp */
+	#include <io.h>
+	
+	/* MinGW/MSYS2 specific includes for command line parsing */
+	#include <unistd.h>
+	#include <getopt.h>
 
-    /* Windows mappings for standard POSIX functions */
-    #define close closesocket
-    #define sleep(x) Sleep((x)*1000)
-    
-    #ifndef PATH_MAX
-        #define PATH_MAX MAX_PATH
-    #endif
+	/* Windows mappings for standard POSIX functions */
+	#define close closesocket
+	#define sleep(x) Sleep((x)*1000)
+	
+	#ifndef PATH_MAX
+		#define PATH_MAX MAX_PATH
+	#endif
 
-    /* Windows does not have gettimeofday, so we implement a shim for PCAP timestamps */
-    static int gettimeofday(struct timeval *tv, void *tz) {
-        if (tv) {
-            FILETIME ft;
-            unsigned __int64 tmpres = 0;
-            GetSystemTimeAsFileTime(&ft);
-            tmpres |= ft.dwHighDateTime;
-            tmpres <<= 32;
-            tmpres |= ft.dwLowDateTime;
-            tmpres /= 10;
-            tmpres -= 11644473600000000ULL; /* Convert 1601 epoch to 1970 epoch */
-            tv->tv_sec = (long)(tmpres / 1000000UL);
-            tv->tv_usec = (long)(tmpres % 1000000UL);
-        }
-        return 0;
-    }
+	/* Windows does not have gettimeofday, so we implement a shim for PCAP timestamps */
+	static int gettimeofday(struct timeval *tv, void *tz) {
+		if (tv) {
+			FILETIME ft;
+			unsigned __int64 tmpres = 0;
+			GetSystemTimeAsFileTime(&ft);
+			tmpres |= ft.dwHighDateTime;
+			tmpres <<= 32;
+			tmpres |= ft.dwLowDateTime;
+			tmpres /= 10;
+			tmpres -= 11644473600000000ULL; /* Convert 1601 epoch to 1970 epoch */
+			tv->tv_sec = (long)(tmpres / 1000000UL);
+			tv->tv_usec = (long)(tmpres % 1000000UL);
+		}
+		return 0;
+	}
 
-    /* Windows does not have localtime_r, use the thread-safe standard C equivalent */
-    static struct tm *localtime_r(const time_t *timer, struct tm *buf) {
-        if (localtime_s(buf, timer) == 0) return buf;
-        return NULL;
-    }
+	/* Windows does not have localtime_r, use the thread-safe standard C equivalent */
+	static struct tm *localtime_r(const time_t *timer, struct tm *buf) {
+		if (localtime_s(buf, timer) == 0) return buf;
+		return NULL;
+	}
 
-    /* Windows select() cannot check pipes, so we rely on timeout loops instead of self-pipes */
-    #define USE_SELECT_TIMEOUT 1
+	/* Windows select() cannot check pipes, so we rely on timeout loops instead of self-pipes */
+	#define USE_SELECT_TIMEOUT 1
 
 #else
-    /* Original POSIX Includes */
-    #include <sys/wait.h>
-    #include <sys/param.h>
-    #include <unistd.h>
-    #include <sys/socket.h>
-    #include <sys/select.h>
-    #include <netinet/in.h>
-    #include <sys/time.h>
-    #include <sys/resource.h>
+	/* Original POSIX Includes */
+	#include <sys/wait.h>
+	#include <sys/param.h>
+	#include <unistd.h>
+	#include <sys/socket.h>
+	#include <sys/select.h>
+	#include <netinet/in.h>
+	#include <sys/time.h>
+	#include <sys/resource.h>
 #endif
 /* --- End Windows Compatibility Layer --- */
 
@@ -159,7 +159,7 @@ static void request_terminate_handler(int signum) {
 	terminate_requested = 1;
 
 #ifndef _WIN32
-    /* Linux: Write to pipe to wake select() */
+	/* Linux: Write to pipe to wake select() */
 	char data = 0;
 	if (self_pipe_fds[1] >= 0 && !shutting_down) {
 		ssize_t r = write(self_pipe_fds[1], &data, sizeof(data));
@@ -198,7 +198,7 @@ static int setup_tzsp_listener(uint16_t listen_port) {
 	int on = 0;
 	/* Windows setsockopt expects char* for the value */
 	result = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY,
-	                    (char*)&on, sizeof(on));
+						(char*)&on, sizeof(on));
 	if (result == -1) {
 		perror("setsockopt()");
 		goto err_close;
@@ -236,7 +236,7 @@ static void cleanup_tzsp_listener(int socket) {
 
 static void trap_signal(int signum) {
 #ifdef _WIN32
-    signal(signum, request_terminate_handler);
+	signal(signum, request_terminate_handler);
 #else
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
@@ -346,21 +346,21 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
 	}
 
 #ifdef _WIN32
-    /* Windows: Use _spawnlp with _P_NOWAIT for asynchronous execution (replaces fork/exec) */
-    intptr_t ret = _spawnlp(_P_NOWAIT, my_pcap->postrotate_command,
-                            my_pcap->postrotate_command,
-                            cmd_filename ? cmd_filename : "",
-                            NULL);
-    if (ret == -1) {
-        fprintf(stderr,
-		        "after_logrotate: _spawnlp(%s, %s) failed: %s\n",
-		        my_pcap->postrotate_command,
+	/* Windows: Use _spawnlp with _P_NOWAIT for asynchronous execution (replaces fork/exec) */
+	intptr_t ret = _spawnlp(_P_NOWAIT, my_pcap->postrotate_command,
+							my_pcap->postrotate_command,
+							cmd_filename ? cmd_filename : "",
+							NULL);
+	if (ret == -1) {
+		fprintf(stderr,
+				"after_logrotate: _spawnlp(%s, %s) failed: %s\n",
+				my_pcap->postrotate_command,
 				cmd_filename ? cmd_filename : "",
-		        strerror(errno));
-    }
-    free(cmd_filename);
+				strerror(errno));
+	}
+	free(cmd_filename);
 #else
-    /* Linux: Fork/Exec */
+	/* Linux: Fork/Exec */
 	pid_t child;
 	child = fork();
 	if (child == -1) {
@@ -398,11 +398,11 @@ static void run_postrotate_command(struct my_pcap_t *my_pcap, const char *filena
 		cmd_filename ? cmd_filename : "",
 		NULL) == -1) {
 		fprintf(stderr,
-		        "after_logrotate: execlp(%s, %s) failed: %s\n",
-		        my_pcap->postrotate_command,
+				"after_logrotate: execlp(%s, %s) failed: %s\n",
+				my_pcap->postrotate_command,
 				cmd_filename ? cmd_filename : "",
-		        strerror(errno));
-    }
+				strerror(errno));
+	}
 	free(cmd_filename);
 	_exit(127);
 #endif
@@ -581,8 +581,8 @@ static int maybe_rotate(struct my_pcap_t *my_pcap) {
 }
 
 static inline const char* name_tag(int tag,
-                                   const char * const names[],
-                                   int names_len) {
+								   const char * const names[],
+								   int names_len) {
 	if (tag >= 0 && tag < names_len) {
 		return names[tag];
 	}
@@ -593,24 +593,24 @@ static inline const char* name_tag(int tag,
 
 static void usage(const char *program) {
 	fprintf(stderr,
-	        "\n"
-	        "tzsp2pcap: receive tazmen sniffer protocol over udp and\n"
-	        "produce pcap formatted output\n"
-	        "\n"
-	        "Usage %s [-h] [-v] [-f] [-p PORT] [-o FILENAME] [-s SIZE] [-G SECONDS] [-C SIZE] [-z CMD] [-l FILEPATH]\n"
-	        "\t-h           Display this message\n"
-	        "\t-v           Verbose (repeat to increase up to -vv)\n"
-	        "\t-f           Flush output after every packet\n"
-	        "\t-p PORT      Specify port to listen on  (defaults to %u)\n"
-	        "\t-o FILENAME  Write output to FILENAME   (defaults to stdout)\n"
-	        "\t-s SIZE      Receive buffer size        (defaults to %u)\n"
-	        "\t-G SECONDS   Rotate file every n seconds\n"
-	        "\t-C FILESIZE  Rotate file when FILESIZE is reached\n"
-	        "\t-z CMD       Post-rotate command to execute\n"
-	        "\t-l FILEPATH  Write log messages to FILEPATH\n",
-	        program,
-	        DEFAULT_LISTEN_PORT,
-	        DEFAULT_RECV_BUFFER_SIZE);
+			"\n"
+			"tzsp2pcap: receive tazmen sniffer protocol over udp and\n"
+			"produce pcap formatted output\n"
+			"\n"
+			"Usage %s [-h] [-v] [-f] [-p PORT] [-o FILENAME] [-s SIZE] [-G SECONDS] [-C SIZE] [-z CMD] [-l FILEPATH]\n"
+			"\t-h           Display this message\n"
+			"\t-v           Verbose (repeat to increase up to -vv)\n"
+			"\t-f           Flush output after every packet\n"
+			"\t-p PORT      Specify port to listen on  (defaults to %u)\n"
+			"\t-o FILENAME  Write output to FILENAME   (defaults to stdout)\n"
+			"\t-s SIZE      Receive buffer size        (defaults to %u)\n"
+			"\t-G SECONDS   Rotate file every n seconds\n"
+			"\t-C FILESIZE  Rotate file when FILESIZE is reached\n"
+			"\t-z CMD       Post-rotate command to execute\n"
+			"\t-l FILEPATH  Write log messages to FILEPATH\n",
+			program,
+			DEFAULT_LISTEN_PORT,
+			DEFAULT_RECV_BUFFER_SIZE);
 }
 
 /*
@@ -619,53 +619,53 @@ static void usage(const char *program) {
  */
 static int tzsp_encap_to_dlt(uint16_t encap)
 {
-    switch (encap) {
-        case 1:  /* Ethernet */
-            return DLT_EN10MB;
-        case 2:  /* 802.11 (no radiotap) */
-            return DLT_IEEE802_11;
-        case 3:  /* Prism header + 802.11 */
-            return DLT_PRISM_HEADER;
-        case 4:  /* AVS header + 802.11 */
-            return DLT_IEEE802_11_RADIO_AVS;
-        case 5:  /* Radiotap + 802.11 */
-            return DLT_IEEE802_11_RADIO;
-        default:
-            return -1; /* unsupported */
-    }
+	switch (encap) {
+		case 1:  /* Ethernet */
+			return DLT_EN10MB;
+		case 2:  /* 802.11 (no radiotap) */
+			return DLT_IEEE802_11;
+		case 3:  /* Prism header + 802.11 */
+			return DLT_PRISM_HEADER;
+		case 4:  /* AVS header + 802.11 */
+			return DLT_IEEE802_11_RADIO_AVS;
+		case 5:  /* Radiotap + 802.11 */
+			return DLT_IEEE802_11_RADIO;
+		default:
+			return -1; /* unsupported */
+	}
 }
 
 int main(int argc, char **argv) {
-    int retval = 0;
+	int retval = 0;
 
 #ifdef _WIN32
-    /* Initialize Winsock before doing anything network related */
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        fprintf(stderr, "WSAStartup failed\n");
-        return 1;
-    }
-    /* Prevent Windows from corrupting binary output on stdout */
-    _setmode(_fileno(stdout), _O_BINARY); 
+	/* Initialize Winsock before doing anything network related */
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+		fprintf(stderr, "WSAStartup failed\n");
+		return 1;
+	}
+	/* Prevent Windows from corrupting binary output on stdout */
+	_setmode(_fileno(stdout), _O_BINARY); 
 #endif
 
 	int         recv_buffer_size  = DEFAULT_RECV_BUFFER_SIZE;
 	uint16_t    listen_port       = DEFAULT_LISTEN_PORT;
 	const char *log_path          = NULL;
-    char *recv_buffer = NULL;
+	char       *recv_buffer       = NULL;
 
 	struct my_pcap_t my_pcap = {
-	    .pcap                    = NULL,
-	    .filename_template       = NULL,
-	    .filename                = NULL,
-	    .fp                      = NULL,
-	    .dumper                  = NULL,
-	    .verbose                 = 0,
-	    .rotation_interval       = 0,
-	    .rotation_start_time     = 0,
-	    .rotation_size_threshold = 0,
-	    .rotation_count          = 0,
-	    .postrotate_command      = NULL,
+		.pcap                    = NULL,
+		.filename_template       = NULL,
+		.filename                = NULL,
+		.fp                      = NULL,
+		.dumper                  = NULL,
+		.verbose                 = 0,
+		.rotation_interval       = 0,
+		.rotation_start_time     = 0,
+		.rotation_size_threshold = 0,
+		.rotation_count          = 0,
+		.postrotate_command      = NULL,
 	};
 
 	my_pcap.filename_template = strdup(DEFAULT_OUT_FILENAME);
@@ -861,7 +861,7 @@ int main(int argc, char **argv) {
 	}
 
 #ifndef _WIN32
-    /* Only setup self-pipe on Linux/Unix */
+	/* Only setup self-pipe on Linux/Unix */
 	if (pipe(self_pipe_fds) == -1) {
 		perror("Creating self-wake pipe\n");
 		retval = errno;
@@ -901,7 +901,7 @@ int main(int argc, char **argv) {
 	trap_signal(SIGHUP);
 #endif
 	trap_signal(SIGTERM);
-    
+	
 #ifndef _WIN32
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
@@ -975,7 +975,7 @@ int main(int argc, char **argv) {
 		goto err_cleanup_pcap;
 	}
 
-    /* Main loop condition checks terminate_requested explicitly */
+	/* Main loop condition checks terminate_requested explicitly */
 	while (!terminate_requested) {
 		fd_set read_set;
 
@@ -998,8 +998,8 @@ next_packet:
 			FD_SET(self_pipe_fds[0], &read_set);
 			if (self_pipe_fds[0] > maxfd) maxfd = self_pipe_fds[0];
 		}
-        
-        /* Linux: Infinite timeout, wakes on pipe or packet */
+		
+		/* Linux: Infinite timeout, wakes on pipe or packet */
 		if (select(maxfd + 1, &read_set, NULL, NULL, NULL) == -1) {
 			if (errno == EINTR) continue;
 			perror("select");
@@ -1007,16 +1007,16 @@ next_packet:
 			break;
 		}
 #else
-        /* Windows: Select with timeout to poll for shutdown signals */
-        struct timeval tv = { 0, 100000 }; /* 100ms */
-        int sret = select(maxfd + 1, &read_set, NULL, NULL, &tv);
-        if (sret == 0) continue; /* Timeout, check terminate_requested loop condition */
-        if (sret == -1) {
-            if (WSAGetLastError() == WSAEINTR) continue;
-            fprintf(stderr, "select failed: %d\n", WSAGetLastError());
-            retval = -1;
-            break;
-        }
+		/* Windows: Select with timeout to poll for shutdown signals */
+		struct timeval tv = { 0, 100000 }; /* 100ms */
+		int sret = select(maxfd + 1, &read_set, NULL, NULL, &tv);
+		if (sret == 0) continue; /* Timeout, check terminate_requested loop condition */
+		if (sret == -1) {
+			if (WSAGetLastError() == WSAEINTR) continue;
+			fprintf(stderr, "select failed: %d\n", WSAGetLastError());
+			retval = -1;
+			break;
+		}
 #endif
 
 #ifndef _WIN32
@@ -1065,8 +1065,8 @@ next_packet:
 		}
 
 		ssize_t readsz =
-		    recvfrom(tzsp_listener, recv_buffer, recv_buffer_size, 0,
-		             NULL, NULL);
+			recvfrom(tzsp_listener, recv_buffer, recv_buffer_size, 0,
+					 NULL, NULL);
 
 		if (readsz == -1) {
 			perror("recv()");
@@ -1132,12 +1132,12 @@ next_packet:
 
 		if (my_pcap.verbose) {
 			fprintf(stderr,
-			        "header { version = %u, type = %s(%u), encap = 0x%.4x }\n",
-			        (unsigned)hdr->version,
-			        name_tag(hdr->type,
-			                 tzsp_type_names, ARRAYSZ(tzsp_type_names)),
-			        (unsigned)hdr->type,
-			        (unsigned)ntohs(hdr->encap));
+					"header { version = %u, type = %s(%u), encap = 0x%.4x }\n",
+					(unsigned)hdr->version,
+					name_tag(hdr->type,
+							 tzsp_type_names, ARRAYSZ(tzsp_type_names)),
+					(unsigned)hdr->type,
+					(unsigned)ntohs(hdr->encap));
 		}
 
 		char got_end_tag = 0;
@@ -1149,8 +1149,8 @@ next_packet:
 		// encapsulated packet here, which for the purpose of being
 		// useful, we should still emit.
 		if (hdr->version == 1 &&
-		    (hdr->type == TZSP_TYPE_RECEIVED_TAG_LIST ||
-		     hdr->type == TZSP_TYPE_PACKET_FOR_TRANSMIT))
+			(hdr->type == TZSP_TYPE_RECEIVED_TAG_LIST ||
+			 hdr->type == TZSP_TYPE_PACKET_FOR_TRANSMIT))
 		{
 			while (p < end) {
 				// some packets only have the type field, which is
@@ -1323,7 +1323,7 @@ exit:
 		free((void*) my_pcap.postrotate_command);
 
 #ifdef _WIN32
-    WSACleanup();
+	WSACleanup();
 #endif
 
 	return retval;
