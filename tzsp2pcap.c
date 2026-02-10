@@ -252,13 +252,13 @@ static void trap_signal(int signum) {
 #endif
 }
 
+#ifndef _WIN32
 static void catch_child(int sig_num) {
 	(void) sig_num;
 
 	/* Record that a child has exited and wake the main loop. */
 	child_exited = 1;
 
-#ifndef _WIN32
 	char data = 0;
 	if (self_pipe_fds[1] >= 0 && !shutting_down) {
 		ssize_t r = write(self_pipe_fds[1], &data, sizeof(data));
@@ -272,8 +272,8 @@ static void catch_child(int sig_num) {
 			}
 		}
 	}
-#endif
 }
+#endif
 
 static const char *get_filename(struct my_pcap_t *my_pcap) {
 	if (my_pcap->rotation_interval > 0) {
@@ -652,6 +652,7 @@ int main(int argc, char **argv) {
 	int         recv_buffer_size  = DEFAULT_RECV_BUFFER_SIZE;
 	uint16_t    listen_port       = DEFAULT_LISTEN_PORT;
 	const char *log_path          = NULL;
+    char *recv_buffer = NULL;
 
 	struct my_pcap_t my_pcap = {
 	    .pcap                    = NULL,
@@ -966,12 +967,10 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	char *recv_buffer = NULL;
-
 	recv_buffer = malloc(recv_buffer_size);
 	if (!recv_buffer) {
 		fprintf(stderr, "Could not allocate receive buffer of %i bytes\n",
-		        recv_buffer_size);
+				recv_buffer_size);
 		retval = -1;
 		goto err_cleanup_pcap;
 	}
