@@ -646,7 +646,10 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	/* Prevent Windows from corrupting binary output on stdout */
-	_setmode(_fileno(stdout), _O_BINARY); 
+	if (_setmode(_fileno(stdout), _O_BINARY) == -1) {
+		perror("Cannot set stdout to binary mode");
+		return 1;
+	}
 #endif
 
 	int         recv_buffer_size  = DEFAULT_RECV_BUFFER_SIZE;
