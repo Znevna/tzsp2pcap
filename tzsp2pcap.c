@@ -43,7 +43,32 @@
 		if (tv) {
 			FILETIME ft;
 			unsigned __int64 tmpres = 0;
-			GetSystemTimeAsFileTime(&ft);
+
+			/* Optimization: Try to load high-precision timer (Win8+) */
+			static void (WINAPI *pGetSystemTimePreciseAsFileTime)(LPFILETIME) = NULL;
+			static int tried_loading = 0;
+
+			if (!tried_loading) {
+				HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+				if (hKernel) {
+					/* FIX: Use a union to cast function pointers without violating strict ISO C rules */
+					union {
+						FARPROC fp;
+						void (WINAPI *func)(LPFILETIME);
+					} caster;
+					
+					caster.fp = GetProcAddress(hKernel, "GetSystemTimePreciseAsFileTime");
+					pGetSystemTimePreciseAsFileTime = caster.func;
+				}
+				tried_loading = 1;
+			}
+
+			if (pGetSystemTimePreciseAsFileTime) {
+				pGetSystemTimePreciseAsFileTime(&ft);
+			} else {
+				GetSystemTimeAsFileTime(&ft);
+			}
+
 			tmpres |= ft.dwHighDateTime;
 			tmpres <<= 32;
 			tmpres |= ft.dwLowDateTime;
