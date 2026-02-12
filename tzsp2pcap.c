@@ -1,5 +1,5 @@
 /*
- * tzsp2pcap for Windows
+ * tzsp2pcap for Windows & Wireshark Extcap
  * Fixed for MinGW/MSYS2 compilation
  */
 
@@ -63,6 +63,7 @@
 
 #else
 	/* Original POSIX Includes */
+	#include <arpa/inet.h> /* For inet_pton */
 	#include <sys/wait.h>
 	#include <sys/param.h>
 	#include <unistd.h>
@@ -71,6 +72,7 @@
 	#include <netinet/in.h>
 	#include <sys/time.h>
 	#include <sys/resource.h>
+	#include <getopt.h> /* Ensure getopt_long is available on Linux too */
 #endif
 /* --- End Windows Compatibility Layer --- */
 
@@ -182,74 +184,117 @@ static void request_terminate_handler(int signum) {
 #endif
 }
 
-static int setup_tzsp_listener(uint16_t listen_port) {
+static int setup_tzsp_listener(uint16_t listen_port, const char *listen_addr) {
+	int sockfd = -1;
 	int result;
+	
+	struct sockaddr_in addr4;
+	struct sockaddr_in6 addr6;
+	void *bind_addr_ptr = NULL;
+	socklen_t bind_addr_len = 0;
+	int domain = AF_INET6; // Default to IPv6 for wildcard
 
-	#if defined(SOCK_CLOEXEC) && !defined(_WIN32)
-		int sockfd = socket(PF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
-	#else
-		int sockfd = (int)socket(PF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-	#endif
-	if (sockfd == -1) {
-		perror("socket()");
-		goto err_exit;
+	// 1. Determine Address Family and Parse IP
+	if (listen_addr && strlen(listen_addr) > 0) {
+		// Try IPv4 first
+		if (inet_pton(AF_INET, listen_addr, &addr4.sin_addr) == 1) {
+			domain = AF_INET;
+			memset(&addr4, 0, sizeof(addr4));
+			addr4.sin_family = AF_INET;
+			addr4.sin_port = htons(listen_port);
+			// Re-parse to fill the struct (safe because we just checked it)
+			inet_pton(AF_INET, listen_addr, &addr4.sin_addr); 
+			bind_addr_ptr = &addr4;
+			bind_addr_len = sizeof(addr4);
+		}
+		// Try IPv6
+		else if (inet_pton(AF_INET6, listen_addr, &addr6.sin6_addr) == 1) {
+			domain = AF_INET6;
+			memset(&addr6, 0, sizeof(addr6));
+			addr6.sin6_family = AF_INET6;
+			addr6.sin6_port = htons(listen_port);
+			inet_pton(AF_INET6, listen_addr, &addr6.sin6_addr);
+			bind_addr_ptr = &addr6;
+			bind_addr_len = sizeof(addr6);
+		}
+		else {
+			fprintf(stderr, "Invalid IP address format: %s\n", listen_addr);
+			return -1;
+		}
+	} else {
+		// Default: Wildcard IPv6 (Dual Stack)
+		domain = AF_INET6;
+		memset(&addr6, 0, sizeof(addr6));
+		addr6.sin6_family = AF_INET6;
+		addr6.sin6_port = htons(listen_port);
+		addr6.sin6_addr = in6addr_any;
+		bind_addr_ptr = &addr6;
+		bind_addr_len = sizeof(addr6);
 	}
 
+	// 2. Create Socket
+	#if defined(SOCK_CLOEXEC) && !defined(_WIN32)
+		sockfd = socket(domain, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
+	#else
+		sockfd = (int)socket(domain, SOCK_DGRAM, IPPROTO_UDP);
+	#endif
+
+	if (sockfd == -1) {
+		perror("socket()");
+		return -1;
+	}
+
+	// 3. Configure Socket Options
 	#if !defined(SOCK_CLOEXEC) && !defined(_WIN32)
 		int fdflags = fcntl(sockfd, F_GETFD, 0);
 		if (fdflags != -1) fcntl(sockfd, F_SETFD, fdflags | FD_CLOEXEC);
 	#endif
 
-	int on = 0;
-	/* Windows setsockopt expects char* for the value.
-	 * Warning fix: cast sockfd to SOCKET. 
-	 */
-	#ifdef _WIN32
-	result = setsockopt((SOCKET)sockfd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&on, sizeof(on));
-	#else
-	result = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&on, sizeof(on));
-	#endif
-
-	if (result == -1) {
-		perror("setsockopt()");
-		goto err_close;
+	// Handle Dual-Stack for IPv6
+	if (domain == AF_INET6) {
+		/* * If binding to a specific IPv6 address (e.g., ::1), we strictly use IPv6 (v6only=1).
+		 * If binding to wildcard (NULL), we allow Dual Stack (v6only=0) to receive IPv4-mapped packets.
+		 */
+		int v6only = (listen_addr && strlen(listen_addr) > 0) ? 1 : 0;
+		
+		#ifdef _WIN32
+		result = setsockopt((SOCKET)sockfd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&v6only, sizeof(v6only));
+		#else
+		result = setsockopt(sockfd, IPPROTO_IPV6, IPV6_V6ONLY, (char*)&v6only, sizeof(v6only));
+		#endif
+		
+		if (result == -1) {
+			perror("setsockopt(IPV6_V6ONLY)");
+			#ifdef _WIN32
+			closesocket((SOCKET)sockfd);
+			#else
+			close(sockfd);
+			#endif
+			return -1;
+		}
 	}
 
-	struct sockaddr_in6 listen_address = {
-		#if defined(SIN6_LEN) && !defined(_WIN32)
-		.sin6_len = sizeof(struct sockaddr_in6),
-		#endif
-
-		.sin6_family = AF_INET6,
-		.sin6_port = htons(listen_port),
-		.sin6_flowinfo = 0,
-		.sin6_addr = in6addr_any,
-	};
-
-	/* Warning fix: cast sockfd to SOCKET */
+	// 4. Bind
 	#ifdef _WIN32
-	result = bind((SOCKET)sockfd, (struct sockaddr*) &listen_address, sizeof(listen_address));
+	result = bind((SOCKET)sockfd, (struct sockaddr*) bind_addr_ptr, bind_addr_len);
 	#else
-	result = bind(sockfd, (struct sockaddr*) &listen_address, sizeof(listen_address));
+	result = bind(sockfd, (struct sockaddr*) bind_addr_ptr, bind_addr_len);
 	#endif
 	
 	if (result == -1) {
 		perror("bind()");
-		goto err_close;
+		fprintf(stderr, "Failed to bind to %s port %u\n", 
+			listen_addr ? listen_addr : "any", listen_port);
+		
+		#ifdef _WIN32
+		closesocket((SOCKET)sockfd);
+		#else
+		close(sockfd);
+		#endif
+		return -1;
 	}
 
 	return sockfd;
-
-err_close:
-	/* Warning fix: cast to SOCKET */
-	#ifdef _WIN32
-	close((SOCKET)sockfd);
-	#else
-	close(sockfd);
-	#endif
-
-err_exit:
-	return -1;
 }
 
 static void cleanup_tzsp_listener(int socket) {
@@ -456,19 +501,27 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 		return -1;
 	}
 
-	pcap_dumper_t *dumper = pcap_dump_open(my_pcap->pcap, filename_copy);
-	if (!dumper) {
-		fprintf(stderr, "Could not open output file: %s\n", pcap_geterr(my_pcap->pcap));
+	/* * Extcap Improvement: Manually open file/pipe first.
+	 * This ensures binary mode and compatibility with Windows named pipes.
+	 */
+	FILE *fp = NULL;
+	if (strcmp(filename, "-") == 0) {
+		fp = stdout;
+	} else {
+		fp = fopen(filename, "wb");
+	}
+
+	if (!fp) {
+		fprintf(stderr, "Error opening file/pipe '%s': %s\n", filename, strerror(errno));
 		free(filename_copy);
 		return -1;
 	}
 
-	FILE *fp = pcap_dump_file(dumper);
-	if (fp == NULL) {
-		/* Better error context for debugging */
-		fprintf(stderr, "Error: pcap_dump_file() failed for file '%s'\n",
-				filename_copy ? filename_copy : "(stdout)");
-		pcap_dump_close(dumper);
+	/* Use pcap_dump_fopen instead of pcap_dump_open */
+	pcap_dumper_t *dumper = pcap_dump_fopen(my_pcap->pcap, fp);
+	if (!dumper) {
+		fprintf(stderr, "Could not open output file: %s\n", pcap_geterr(my_pcap->pcap));
+		if (fp != stdout) fclose(fp);
 		free(filename_copy);
 		return -1;
 	}
@@ -629,10 +682,11 @@ static void usage(const char *program) {
 			"tzsp2pcap: receive tazmen sniffer protocol over udp and\n"
 			"produce pcap formatted output\n"
 			"\n"
-			"Usage %s [-h] [-v] [-f] [-p PORT] [-o FILENAME] [-s SIZE] [-G SECONDS] [-C SIZE] [-z CMD] [-l FILEPATH]\n"
+			"Usage %s [-h] [-v] [-f] [-a ADDRESS] [-p PORT] [-o FILENAME] ...\n"
 			"\t-h           Display this message\n"
 			"\t-v           Verbose (repeat to increase up to -vv)\n"
 			"\t-f           Flush output after every packet\n"
+			"\t-a ADDRESS   Specify IP address to listen on (defaults to any)\n"
 			"\t-p PORT      Specify port to listen on  (defaults to %u)\n"
 			"\t-o FILENAME  Write output to FILENAME   (defaults to stdout)\n"
 			"\t-s SIZE      Receive buffer size        (defaults to %u)\n"
@@ -683,6 +737,24 @@ static int validate_log_path(const char *log_path) {
 	return 0;
 }
 
+/* --- Extcap Helper Functions --- */
+static void extcap_print_interfaces() {
+	printf("extcap {version=1.0}{display=MikroTik TZSP Listener}{help=https://github.com/theflowring/tzsp2pcap}\n");
+	printf("interface {value=tzsp}{display=TZSP Stream}{kind=nif}\n");
+}
+
+static void extcap_print_dlts() {
+	/* We claim to output Ethernet, though we switch dynamically */
+	printf("dlt {number=1}{name=TZSP}{display=TZSP Encapsulated}\n");
+}
+
+static void extcap_print_config() {
+	printf("arg {number=0}{call=--udp-port}{display=Listen Port}{type=unsigned}{range=1,65535}{default=%d}{tooltip=UDP port to listen for TZSP packets}\n", DEFAULT_LISTEN_PORT);
+	printf("arg {number=1}{call=--listen-address}{display=Listen Address}{type=string}{tooltip=IP address to bind to (leave empty for all)}\n");
+	printf("arg {number=2}{call=--buffer-size}{display=Buffer Size}{type=unsigned}{default=%d}{tooltip=Receive buffer size}\n", DEFAULT_RECV_BUFFER_SIZE);
+}
+/* --- End Extcap Helper Functions --- */
+
 int main(int argc, char **argv) {
 	int retval = 0;
 
@@ -702,6 +774,7 @@ int main(int argc, char **argv) {
 
 	int         recv_buffer_size  = DEFAULT_RECV_BUFFER_SIZE;
 	uint16_t    listen_port       = DEFAULT_LISTEN_PORT;
+	const char *listen_addr       = NULL;
 	const char *log_path          = NULL;
 	char       *recv_buffer       = NULL;
 
@@ -728,9 +801,69 @@ int main(int argc, char **argv) {
 
 	char flush_every_packet = 0;
 
-	int ch;
-	while ((ch = getopt(argc, argv, "fp:o:s:C:G:z:l:vh")) != -1) {
-		switch (ch) {
+	/* Define long options for Wireshark Extcap */
+	static struct option long_options[] = {
+		{"extcap-interfaces", no_argument, 0, 'I'},
+		{"extcap-version", optional_argument, 0, 'V'},
+		{"extcap-dlts", no_argument, 0, 'D'},
+		{"extcap-interface", required_argument, 0, 'i'},
+		{"extcap-config", no_argument, 0, 'X'}, /* Using X to avoid conflict with -C (filesize) */
+		{"capture", no_argument, 0, 'Y'},       /* Using Y to avoid conflicts */
+		{"fifo", required_argument, 0, 'F'},
+		{"udp-port", required_argument, 0, 'P'},
+		{"listen-address", required_argument, 0, 'a'},
+		{"buffer-size", required_argument, 0, 'S'},
+		/* Legacy short options mapped to themselves if they have no long equivalent */
+		{"verbose", no_argument, 0, 'v'},
+		{"help", no_argument, 0, 'h'},
+		{0, 0, 0, 0}
+	};
+
+	int opt;
+	int option_index = 0;
+
+	/* Use getopt_long to parse both short (legacy) and long (extcap) arguments */
+	while ((opt = getopt_long(argc, argv, ":fp:a:o:s:C:G:z:l:vh", long_options, &option_index)) != -1) {
+		switch (opt) {
+		/* --- Extcap Handling --- */
+		case 'I':
+			extcap_print_interfaces();
+			return 0;
+		case 'D':
+			extcap_print_dlts();
+			return 0;
+		case 'X': /* --extcap-config */
+			extcap_print_config();
+			return 0;
+		case 'V':
+			printf("extcap {version=1.0}\n");
+			return 0;
+		case 'i':
+			/* Wireshark passes the interface name (e.g., "tzsp"). 
+			   We verify it matches but otherwise ignore it. */
+			break;
+		case 'Y': /* --capture */
+			/* Just a mode flag, we proceed to setup */
+			break;
+		case 'F': /* --fifo */
+			/* Wireshark passes the pipe path here. We treat it like -o */
+			if (my_pcap.filename_template) free((void*)my_pcap.filename_template);
+			my_pcap.filename_template = strdup(optarg);
+			flush_every_packet = 1; /* Always flush for real-time pipes */
+			break;
+		case 'P': /* --udp-port */
+			listen_port = (uint16_t)atoi(optarg);
+			break;
+		case 'a':
+			listen_addr = optarg;
+			// Basic validation check (full validation happens in setup_tzsp_listener)
+			if (listen_addr && strlen(listen_addr) == 0) listen_addr = NULL;
+			break;
+		case 'S': /* --buffer-size */
+			recv_buffer_size = atoi(optarg);
+			break;
+
+		/* --- Legacy Handling --- */
 		case 'f':
 			flush_every_packet = 1;
 			break;
@@ -739,57 +872,35 @@ int main(int argc, char **argv) {
 		{
 			char *end = NULL;
 			long port_val = strtol(optarg, &end, 10);
-
 			if (end == optarg || *end != '\0') {
 				fprintf(stderr, "Invalid port '%s' provided with -p\n", optarg);
 				retval = -1;
 				goto exit;
 			}
 			if (port_val <= 0 || port_val > 65535) {
-				fprintf(stderr, "Invalid port %ld provided with -p (must be 1-65535)\n", port_val);
+				fprintf(stderr, "Invalid port %ld (must be 1-65535)\n", port_val);
 				retval = -1;
 				goto exit;
 			}
-
 			listen_port = (uint16_t)port_val;
 			break;
 		}
 
 		case 'o':
-			if (my_pcap.filename_template) {
-				free((void*) my_pcap.filename_template);
-				my_pcap.filename_template = NULL;
-			}
+			if (my_pcap.filename_template) 
+				free((void*)my_pcap.filename_template);
 			my_pcap.filename_template = strdup(optarg);
-			if (my_pcap.filename_template == NULL) {
-				perror("strdup(-o filename)");
-				retval = errno;
-				my_pcap.filename_template = NULL;
-				goto exit;
-			}
 			break;
 
 		case 's':
 		{
 			char *end = NULL;
 			long size_val = strtol(optarg, &end, 10);
-
-			if (end == optarg || *end != '\0') {
-				fprintf(stderr, "Invalid SIZE '%s' provided with -s\n", optarg);
+			if (size_val <= 0 || size_val > 16 * 1024 * 1024) {
+				fprintf(stderr, "Invalid receive buffer size %ld\n", size_val);
 				retval = -1;
 				goto exit;
 			}
-			if (size_val <= 0) {
-				fprintf(stderr, "Invalid receive buffer size %ld (must be > 0)\n", size_val);
-				retval = -1;
-				goto exit;
-			}
-			if (size_val > 16 * 1024 * 1024) {
-				fprintf(stderr, "Receive buffer size %ld too large (max 16777216)\n", size_val);
-				retval = -1;
-				goto exit;
-			}
-
 			recv_buffer_size = (int)size_val;
 			break;
 		}
@@ -801,53 +912,32 @@ int main(int argc, char **argv) {
 		case 'G': {
 			char *end = NULL;
 			long rotation_interval_long = strtol(optarg, &end, 10);
-
-			if (end == optarg || *end != '\0') {
-				fprintf(stderr, "Invalid -G seconds '%s' provided\n", optarg);
-				retval = -1;
-				goto exit;
-			}
 			if (rotation_interval_long <= 0 || rotation_interval_long > INT_MAX) {
-				fprintf(stderr, "Invalid -G seconds %ld provided (must be 1-%d)\n",
-					rotation_interval_long, INT_MAX);
+				fprintf(stderr, "Invalid -G seconds %ld\n",
+					rotation_interval_long);
 				retval = -1;
 				goto exit;
 			}
-
-			int rotation_interval = (int)rotation_interval_long;
-
-			/* Consistent error handling for time functions */
-			time_t now = time(NULL);
-			if (now == (time_t) -1) {
+			my_pcap.rotation_interval = (int)rotation_interval_long;
+			my_pcap.rotation_start_time = time(NULL);
+			if (my_pcap.rotation_start_time == (time_t)-1) {
 				perror("time");
 				retval = errno;
 				goto exit;
 			}
-
-			my_pcap.rotation_interval   = rotation_interval;
-			my_pcap.rotation_start_time = now;
-
 			break;
 		}
 
 		case 'C': {
 			char *end = NULL;
 			long rotation_size_long = strtol(optarg, &end, 10);
-
-			if (end == optarg || *end != '\0') {
-				fprintf(stderr, "Invalid -C filesize '%s' provided\n", optarg);
-				retval = -1;
-				goto exit;
-			}
 			if (rotation_size_long <= 0 || rotation_size_long > INT_MAX) {
-				fprintf(stderr, "Invalid -C filesize %ld provided (must be 1-%d)\n",
-					rotation_size_long, INT_MAX);
+				fprintf(stderr, "Invalid -C filesize %ld\n",
+					rotation_size_long);
 				retval = -1;
 				goto exit;
 			}
-
-			int rotation_size_threshold = (int)rotation_size_long;
-			my_pcap.rotation_size_threshold = rotation_size_threshold;
+			my_pcap.rotation_size_threshold = (int)rotation_size_long;
 			break;
 		}
 
@@ -855,26 +945,18 @@ int main(int argc, char **argv) {
 			if (my_pcap.postrotate_command)
 				free((void *)my_pcap.postrotate_command);
 			my_pcap.postrotate_command = strdup(optarg);
-			if (my_pcap.postrotate_command == NULL) {
-				perror("strdup(-z cmd)");
-				retval = errno;
-				my_pcap.postrotate_command = NULL;
-				goto exit;
-			}
 			break;
 
-		case 'l': {
+		case 'l':
 			log_path = optarg;
-
+			/* Simple whitespace check */
 			const char *p = log_path;
-			while (*p && isspace((unsigned char)*p)) {
+			while (*p && isspace((unsigned char)*p)) 
 				p++;
-			}
 			if (*p == '\0') {
-				fprintf(stderr, "Invalid -l filepath provided for logging\n");
+				fprintf(stderr, "Invalid -l filepath\n");
 				exit(EXIT_FAILURE);
 			}
-
 			/* Validate log file early */
 			if (validate_log_path(log_path) != 0) {
 				fprintf(stderr, "Cannot write to log file '%s'\n", log_path);
@@ -882,12 +964,8 @@ int main(int argc, char **argv) {
 				goto exit;
 			}
 			break;
-		}
 
 		default:
-			retval = -1;
-			/* FALLTHRU */
-
 		case 'h':
 			usage(argv[0]);
 			goto exit;
@@ -962,7 +1040,7 @@ int main(int argc, char **argv) {
 	sigaction(SIGCHLD, &sa, NULL);
 #endif
 
-	int tzsp_listener = setup_tzsp_listener(listen_port);
+	int tzsp_listener = setup_tzsp_listener(listen_port, listen_addr);
 	if (tzsp_listener == -1) {
 		fprintf(stderr, "Could not setup tzsp listener\n");
 		retval = errno;
@@ -1217,13 +1295,8 @@ next_packet:
 			 hdr->type == TZSP_TYPE_PACKET_FOR_TRANSMIT))
 		{
 			while (p < end) {
-				/* Bounds checking for truncated TZSP packets */
-				if (p + sizeof(uint8_t) > end) {
-					if (my_pcap.verbose >= 1) {
-						fprintf(stderr, "Warning: Packet ended in TZSP tag type byte\n");
-					}
-					break;
-				}
+				// some packets only have the type field, which is
+				// guaranteed by (p < end).
 
 				uint8_t tag_type = (uint8_t)*p;
 
