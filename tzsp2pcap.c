@@ -78,6 +78,13 @@
 
 #define ARRAYSZ(x) (sizeof(x)/sizeof(*x))
 
+/* Named constants for TZSP encapsulation types */
+#define TZSP_ENCAP_ETHERNET           1
+#define TZSP_ENCAP_802_11             2
+#define TZSP_ENCAP_802_11_PRISM       3
+#define TZSP_ENCAP_802_11_AVS         4
+#define TZSP_ENCAP_802_11_RADIOTAP    5
+
 #define DEFAULT_RECV_BUFFER_SIZE 65535
 #define DEFAULT_LISTEN_PORT 37008
 #define DEFAULT_OUT_FILENAME "-"
@@ -458,7 +465,9 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 
 	FILE *fp = pcap_dump_file(dumper);
 	if (fp == NULL) {
-		fprintf(stderr, "pcap_dump_file() returned NULL\n");
+		/* Better error context for debugging */
+		fprintf(stderr, "Error: pcap_dump_file() failed for file '%s'\n",
+				filename_copy ? filename_copy : "(stdout)");
 		pcap_dump_close(dumper);
 		free(filename_copy);
 		return -1;
@@ -486,6 +495,9 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 	my_pcap->filename = filename_copy;
 	my_pcap->fp       = fp;
 
+	if (my_pcap->verbose) {
+		fprintf(stderr, "Successfully opened output file: %s\n", filename_copy);
+	}
 	return 0;
 }
 
@@ -588,7 +600,7 @@ static int maybe_rotate(struct my_pcap_t *my_pcap) {
 
 		/* Get the current time */
 		if ((now = time(NULL)) == (time_t) -1) {
-			perror("Can't get current_time");
+			perror("time");
 			return -1;
 		}
 		if (now - my_pcap->rotation_start_time >= my_pcap->rotation_interval) {
@@ -633,6 +645,7 @@ static void usage(const char *program) {
 			DEFAULT_RECV_BUFFER_SIZE);
 }
 
+/* Use named constants for encapsulation type mapping */
 /*
  * Map TZSP encapsulation types to libpcap DLTs.
  * These values follow the MikroTik TZSP specification.
@@ -640,19 +653,34 @@ static void usage(const char *program) {
 static int tzsp_encap_to_dlt(uint16_t encap)
 {
 	switch (encap) {
-		case 1:  /* Ethernet */
+		case TZSP_ENCAP_ETHERNET:
 			return DLT_EN10MB;
-		case 2:  /* 802.11 (no radiotap) */
+		case TZSP_ENCAP_802_11:
 			return DLT_IEEE802_11;
-		case 3:  /* Prism header + 802.11 */
+		case TZSP_ENCAP_802_11_PRISM:
 			return DLT_PRISM_HEADER;
-		case 4:  /* AVS header + 802.11 */
+		case TZSP_ENCAP_802_11_AVS:
 			return DLT_IEEE802_11_RADIO_AVS;
-		case 5:  /* Radiotap + 802.11 */
+		case TZSP_ENCAP_802_11_RADIOTAP:
 			return DLT_IEEE802_11_RADIO;
 		default:
 			return -1; /* unsupported */
 	}
+}
+
+/* Validate log file path early */
+static int validate_log_path(const char *log_path) {
+	if (!log_path) {
+		return 0; /* No log path specified */
+	}
+	
+	FILE *test_fp = fopen(log_path, "a");
+	if (!test_fp) {
+		perror(log_path);
+		return -1;
+	}
+	fclose(test_fp);
+	return 0;
 }
 
 int main(int argc, char **argv) {
@@ -788,9 +816,10 @@ int main(int argc, char **argv) {
 
 			int rotation_interval = (int)rotation_interval_long;
 
-			time_t now;
-			if ((now = time(NULL)) == (time_t) -1) {
-				perror("Cannot get current time");
+			/* Consistent error handling for time functions */
+			time_t now = time(NULL);
+			if (now == (time_t) -1) {
+				perror("time");
 				retval = errno;
 				goto exit;
 			}
@@ -846,13 +875,12 @@ int main(int argc, char **argv) {
 				exit(EXIT_FAILURE);
 			}
 
-			FILE *log_file = fopen(log_path, "a");
-			if (!log_file) {
-				fprintf(stderr, "Cannot open file path '%s' for writing\n", log_path);
-				perror("fopen");
-				exit(EXIT_FAILURE);
+			/* Validate log file early */
+			if (validate_log_path(log_path) != 0) {
+				fprintf(stderr, "Cannot write to log file '%s'\n", log_path);
+				retval = errno;
+				goto exit;
 			}
-			fclose(log_file);
 			break;
 		}
 
@@ -1005,7 +1033,7 @@ int main(int argc, char **argv) {
 
 next_packet:
 		if (my_pcap.verbose >= 2) {
-			fprintf(stderr, "loop_start\n");
+			fprintf(stderr, ".");
 		}
 
 		FD_ZERO(&read_set);
@@ -1121,8 +1149,7 @@ next_packet:
 		}
 
 		if (my_pcap.verbose >= 2) {
-			fprintf(stderr,
-				"read %zd bytes into buffer of size %d\n",
+			fprintf(stderr, "\nread %zd bytes into buffer of size %d\n",
 				readsz, recv_buffer_size);
 		}
 
@@ -1190,8 +1217,13 @@ next_packet:
 			 hdr->type == TZSP_TYPE_PACKET_FOR_TRANSMIT))
 		{
 			while (p < end) {
-				// some packets only have the type field, which is
-				// guaranteed by (p < end).
+				/* Bounds checking for truncated TZSP packets */
+				if (p + sizeof(uint8_t) > end) {
+					if (my_pcap.verbose >= 1) {
+						fprintf(stderr, "Warning: Packet ended in TZSP tag type byte\n");
+					}
+					break;
+				}
 
 				uint8_t tag_type = (uint8_t)*p;
 
