@@ -764,8 +764,8 @@ static int validate_log_path(const char *log_path) {
 
 /* --- Extcap Helper Functions --- */
 static void extcap_print_interfaces() {
-	printf("extcap {version=1.0}{display=MikroTik TZSP Listener}{help=https://github.com/theflowring/tzsp2pcap}\n");
-	printf("interface {value=tzsp}{display=TZSP Stream}{kind=nif}\n");
+	printf("extcap {version=0.0.6}{display=MikroTik TZSP Listener}{help=https://github.com/Znevna/tzsp2pcap}\n");
+	printf("interface {value=tzsp}{display=TZSP Listener}{kind=nif}\n");
 }
 
 static void extcap_print_dlts() {
@@ -833,6 +833,7 @@ int main(int argc, char **argv) {
 		{"extcap-dlts", no_argument, 0, 'D'},
 		{"extcap-interface", required_argument, 0, 'i'},
 		{"extcap-config", no_argument, 0, 'X'}, /* Using X to avoid conflict with -C (filesize) */
+		{"extcap-capture-filter", required_argument, 0, 'U'}, /* Mapped to 'U' for "Unsupported" */
 		{"capture", no_argument, 0, 'Y'},       /* Using Y to avoid conflicts */
 		{"fifo", required_argument, 0, 'F'},
 		{"udp-port", required_argument, 0, 'P'},
@@ -861,7 +862,7 @@ int main(int argc, char **argv) {
 			extcap_print_config();
 			return 0;
 		case 'V':
-			printf("extcap {version=1.0}\n");
+			printf("extcap {version=0.0.6}\n");
 			return 0;
 		case 'i':
 			/* Wireshark passes the interface name (e.g., "tzsp"). 
@@ -876,6 +877,14 @@ int main(int argc, char **argv) {
 			my_pcap.filename_template = strdup(optarg);
 			flush_every_packet = 1; /* Always flush for real-time pipes */
 			break;
+		case 'U':
+		/* Wireshark sent a capture filter. We don't support it, so we warn and exit. */
+		if (optarg && strlen(optarg) > 0) {
+			fprintf(stderr, "Error: Capture filters are not supported by this tool.\n");
+			fprintf(stderr, "Please use Display Filters (top bar) instead.\n");
+			return 1; /* Causes Wireshark to show the error popup */
+		}
+		break;
 		case 'P': /* --udp-port */
 			listen_port = (uint16_t)atoi(optarg);
 			break;
