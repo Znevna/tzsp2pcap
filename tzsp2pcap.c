@@ -742,6 +742,9 @@ static int tzsp_encap_to_dlt(uint16_t encap)
 			return DLT_IEEE802_11_RADIO_AVS;
 		case TZSP_ENCAP_802_11_RADIOTAP:
 			return DLT_IEEE802_11_RADIO;
+		/* FIX for Wave2/AX Drivers (Type 126) */
+		case 126:
+			return DLT_IEEE802_11_RADIO; /* Map MikroTik's 126 to standard Radiotap */
 		default:
 			return -1; /* unsupported */
 	}
