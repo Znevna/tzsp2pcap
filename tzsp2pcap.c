@@ -563,9 +563,6 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 		return -1;
 	}
 
-	/* Disable buffering to prevent data getting stuck during rotation */
-	setvbuf(fp, NULL, _IONBF, 0);
-
 	pcap_dumper_t *dumper = pcap_dump_fopen(my_pcap->pcap, fp);
 	if (!dumper) {
 		fprintf(stderr, "Could not open pcap dumper: %s\n", pcap_geterr(my_pcap->pcap));
