@@ -785,7 +785,7 @@ static int validate_log_path(const char *log_path) {
 
 /* --- Extcap Helper Functions --- */
 static void extcap_print_interfaces() {
-	printf("extcap {version=0.0.6}{display=MikroTik TZSP Listener}{help=https://github.com/Znevna/tzsp2pcap}\n");
+	printf("extcap {version=0.0.9}{display=MikroTik TZSP Listener}{help=https://github.com/Znevna/tzsp2pcap}\n");
 	printf("interface {value=tzsp}{display=TZSP Listener}{kind=nif}\n");
 }
 
@@ -889,7 +889,7 @@ int main(int argc, char **argv) {
 			extcap_print_config();
 			return 0;
 		case 'V':
-			printf("extcap {version=0.0.6}\n");
+			printf("extcap {version=0.0.9}\n");
 			return 0;
 		case 'i':
 			/* Wireshark passes the interface name (e.g., "tzsp"). */
