@@ -805,6 +805,11 @@ static void extcap_print_config() {
 
 int main(int argc, char **argv) {
 	int retval = 0;
+	char *capture_filter_str = NULL;
+	struct bpf_program bpf_filter;
+	int filter_active = 0;
+	int is_extcap = 0;
+	int do_capture = 0;
 
 #ifdef _WIN32
 	/* Initialize Winsock before doing anything network related */
@@ -888,11 +893,11 @@ int main(int argc, char **argv) {
 			printf("extcap {version=0.0.6}\n");
 			return 0;
 		case 'i':
-			/* Wireshark passes the interface name (e.g., "tzsp"). 
-			   We verify it matches but otherwise ignore it. */
+			/* Wireshark passes the interface name (e.g., "tzsp"). */
+			is_extcap = 1; /* Note that we are in extcap mode */
 			break;
 		case 'Y': /* --capture */
-			/* Just a mode flag, we proceed to setup */
+			do_capture = 1; /* Note that Wireshark actually wants to start */
 			break;
 		case 'F': /* --fifo */
 		{
@@ -916,14 +921,11 @@ int main(int argc, char **argv) {
 			flush_every_packet = 1; 
 			break;
 		}
-		case 'U':
-		/* Wireshark sent a capture filter. We don't support it, so we warn and exit. */
-		if (optarg && strlen(optarg) > 0) {
-			fprintf(stderr, "Error: Capture filters are not supported by this tool.\n");
-			fprintf(stderr, "Please use Display Filters (top bar) instead.\n");
-			return 1; /* Causes Wireshark to show the error popup */
-		}
-		break;
+		case 'U': /* --extcap-capture-filter */
+			if (optarg && strlen(optarg) > 0) {
+				capture_filter_str = strdup(optarg);
+			}
+			break;
 		case 'P': /* --udp-port */
 			listen_port = (uint16_t)atoi(optarg);
 			break;
@@ -1044,6 +1046,45 @@ int main(int argc, char **argv) {
 			goto exit;
 		}
 	}
+
+	/* -----------------------------------------------------------------
+	 * FILTER VALIDATION: If Wireshark calls us WITHOUT --capture, 
+	 * it just wants to check if the filter syntax is valid. 
+	 * ----------------------------------------------------------------- */
+	if (is_extcap && !do_capture) {
+		if (capture_filter_str) {
+			int valid = 0;
+			struct bpf_program bpf;
+			
+			/* Check against Ethernet */
+			pcap_t *dummy_eth = pcap_open_dead(DLT_EN10MB, 65535);
+			if (pcap_compile(dummy_eth, &bpf, capture_filter_str, 1, PCAP_NETMASK_UNKNOWN) == 0) {
+				valid = 1;
+				pcap_freecode(&bpf);
+			}
+			pcap_close(dummy_eth);
+
+			/* Check against Wi-Fi / Radiotap */
+			if (!valid) {
+				pcap_t *dummy_wifi = pcap_open_dead(DLT_IEEE802_11_RADIO, 65535);
+				if (pcap_compile(dummy_wifi, &bpf, capture_filter_str, 1, PCAP_NETMASK_UNKNOWN) == 0) {
+					valid = 1;
+					pcap_freecode(&bpf);
+				}
+				pcap_close(dummy_wifi);
+			}
+
+			/* Clean up our strdup */
+			free(capture_filter_str);
+			
+			/* Return 0 to Wireshark if valid (Green), 1 if invalid (Red) */
+			return valid ? 0 : 1; 
+		}
+		
+		/* If there's no filter and no capture flag, just exit cleanly */
+		return 0;
+	}
+	/* ----------------------------------------------------------------- */
 
 	if (log_path) {
 		FILE *log_file = freopen(log_path, "a", stderr);
@@ -1285,6 +1326,16 @@ next_packet:
 				goto err_cleanup_pcap;
 			}
 			if (initial_filename) free((void *)initial_filename);
+
+			/* COMPILATION: Compile the capture filter for the active DLT */
+			if (capture_filter_str) {
+				if (pcap_compile(my_pcap.pcap, &bpf_filter, capture_filter_str, 1, PCAP_NETMASK_UNKNOWN) < 0) {
+					fprintf(stderr, "Error compiling capture filter: %s\n", pcap_geterr(my_pcap.pcap));
+					retval = -1;
+					goto err_cleanup_pcap;
+				}
+				filter_active = 1;
+			}
 		}
 		/* Fallback: If DLT changes mid-stream */
 		else if (pcap_datalink(my_pcap.pcap) != dlt) {
@@ -1292,6 +1343,13 @@ next_packet:
 				fprintf(stderr, "DLT changed from %d to %d, rotating...\n",
 						pcap_datalink(my_pcap.pcap), dlt);
 			}
+			
+			/* Free old filter before rotating */
+			if (filter_active) {
+				pcap_freecode(&bpf_filter);
+				filter_active = 0;
+			}
+
 			pcap_t *new_pcap = pcap_open_dead(dlt, recv_buffer_size);
 			if (!new_pcap) {
 				fprintf(stderr, "Could not reinitialize pcap for DLT %d\n", dlt);
@@ -1309,6 +1367,16 @@ next_packet:
 				goto err_cleanup_pcap;
 			}
 			pcap_close(old_pcap);
+
+			/* Re-compile filter for the new DLT */
+			if (capture_filter_str) {
+				if (pcap_compile(my_pcap.pcap, &bpf_filter, capture_filter_str, 1, PCAP_NETMASK_UNKNOWN) < 0) {
+					fprintf(stderr, "Error compiling capture filter for new DLT: %s\n", pcap_geterr(my_pcap.pcap));
+					retval = -1;
+					goto err_cleanup_pcap;
+				}
+				filter_active = 1;
+			}
 		}
 
 		p += sizeof(struct tzsp_header);
@@ -1414,6 +1482,14 @@ next_packet:
 		};
 		gettimeofday(&pcap_hdr.ts, NULL);
 
+		/* APPLY FILTER: Drop the packet if it doesn't match */
+		if (filter_active) {
+			if (pcap_offline_filter(&bpf_filter, &pcap_hdr, (const u_char*) p) == 0) {
+				/* Packet failed the filter criteria. Silently drop it. */
+				goto next_packet;
+			}
+		}
+
 		if (my_pcap.verbose) {
 			fprintf(stderr,
 					"\tpacket data begins at offset 0x%zx, length 0x%zx\n",
@@ -1478,6 +1554,12 @@ err_cleanup_pipe:
 #endif
 
 exit:
+	if (filter_active) {
+		pcap_freecode(&bpf_filter);
+	}
+	if (capture_filter_str) {
+		free(capture_filter_str);
+	}
 	if (my_pcap.filename_template)
 		free((void*) my_pcap.filename_template);
 	if (my_pcap.filename)
