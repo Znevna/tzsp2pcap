@@ -731,6 +731,7 @@ static void usage(const char *program) {
 			"\t-h           Display this message\n"
 			"\t-v           Verbose (repeat to increase up to -vv)\n"
 			"\t-f           Flush output after every packet\n"
+			"\t-b FILTER    Specify a BPF capture filter (e.g., \"tcp port 80\")\n"
 			"\t-a ADDRESS   Specify IP address to listen on (defaults to any)\n"
 			"\t-p PORT      Specify port to listen on  (defaults to %u)\n"
 			"\t-o FILENAME  Write output to FILENAME   (defaults to stdout)\n"
@@ -861,8 +862,9 @@ int main(int argc, char **argv) {
 		{"extcap-dlts", no_argument, 0, 'D'},
 		{"extcap-interface", required_argument, 0, 'i'},
 		{"extcap-config", no_argument, 0, 'X'}, /* Using X to avoid conflict with -C (filesize) */
-		{"extcap-capture-filter", required_argument, 0, 'U'}, /* Mapped to 'U' for "Unsupported" */
-		{"capture", no_argument, 0, 'Y'},       /* Using Y to avoid conflicts */
+		{"extcap-capture-filter", required_argument, 0, 'U'},
+		{"filter", required_argument, 0, 'b'},
+		{"capture", no_argument, 0, 'Y'},
 		{"fifo", required_argument, 0, 'F'},
 		{"udp-port", required_argument, 0, 'P'},
 		{"listen-address", required_argument, 0, 'a'},
@@ -877,7 +879,7 @@ int main(int argc, char **argv) {
 	int option_index = 0;
 
 	/* Use getopt_long to parse both short (legacy) and long (extcap) arguments */
-	while ((opt = getopt_long(argc, argv, ":fp:a:o:s:C:G:z:l:vh", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, ":fp:a:o:s:C:G:z:l:vhb:", long_options, &option_index)) != -1) {
 		switch (opt) {
 		/* --- Extcap Handling --- */
 		case 'I':
@@ -921,8 +923,11 @@ int main(int argc, char **argv) {
 			flush_every_packet = 1; 
 			break;
 		}
+		case 'b': /* -b or --filter */
 		case 'U': /* --extcap-capture-filter */
 			if (optarg && strlen(optarg) > 0) {
+				/* Free if specified multiple times to avoid memory leak */
+				if (capture_filter_str) free(capture_filter_str);
 				capture_filter_str = strdup(optarg);
 			}
 			break;
