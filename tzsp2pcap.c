@@ -184,6 +184,9 @@ static volatile sig_atomic_t terminate_requested = 0;
 static volatile sig_atomic_t child_exited = 0;
 static volatile sig_atomic_t shutting_down = 0;
 
+/* Global handle to keep the pipe open across DLT rotations */
+static FILE *g_fifo_handle = NULL;
+
 static void request_terminate_handler(int signum) {
 	(void)signum;
 
@@ -221,24 +224,22 @@ static int setup_tzsp_listener(uint16_t listen_port, const char *listen_addr) {
 
 	// 1. Determine Address Family and Parse IP
 	if (listen_addr && strlen(listen_addr) > 0) {
-		// Try IPv4 first
-		if (inet_pton(AF_INET, listen_addr, &addr4.sin_addr) == 1) {
-			domain = AF_INET;
-			memset(&addr4, 0, sizeof(addr4));
-			addr4.sin_family = AF_INET;
-			addr4.sin_port = htons(listen_port);
-			// Re-parse to fill the struct (safe because we just checked it)
-			inet_pton(AF_INET, listen_addr, &addr4.sin_addr); 
-			bind_addr_ptr = &addr4;
-			bind_addr_len = sizeof(addr4);
-		}
-		// Try IPv6
-		else if (inet_pton(AF_INET6, listen_addr, &addr6.sin6_addr) == 1) {
+	/* Try IPv4 */
+	memset(&addr4, 0, sizeof(addr4));
+	if (inet_pton(AF_INET, listen_addr, &addr4.sin_addr) == 1) {
+		domain = AF_INET;
+		addr4.sin_family = AF_INET;
+		addr4.sin_port = htons(listen_port);
+		bind_addr_ptr = &addr4;
+		bind_addr_len = sizeof(addr4);
+	}
+	/* Try IPv6 */
+	else {
+		memset(&addr6, 0, sizeof(addr6));
+		if (inet_pton(AF_INET6, listen_addr, &addr6.sin6_addr) == 1) {
 			domain = AF_INET6;
-			memset(&addr6, 0, sizeof(addr6));
 			addr6.sin6_family = AF_INET6;
 			addr6.sin6_port = htons(listen_port);
-			inet_pton(AF_INET6, listen_addr, &addr6.sin6_addr);
 			bind_addr_ptr = &addr6;
 			bind_addr_len = sizeof(addr6);
 		}
@@ -246,7 +247,8 @@ static int setup_tzsp_listener(uint16_t listen_port, const char *listen_addr) {
 			fprintf(stderr, "Invalid IP address format: %s\n", listen_addr);
 			return -1;
 		}
-	} else {
+	}
+} else {
 		// Default: Wildcard IPv6 (Dual Stack)
 		domain = AF_INET6;
 		memset(&addr6, 0, sizeof(addr6));
@@ -510,77 +512,95 @@ static int open_dumper(struct my_pcap_t *my_pcap, const char *filename) {
 		fprintf(stderr, "Opening output file: %s\n", filename);
 	}
 
-	if (filename == NULL) {
-		fprintf(stderr, "open_dumper: NULL filename\n");
-		return -1;
-	}
-
-	/*
-	 * Take ownership of the filename via a private copy so that
-	 * my_pcap always holds heap-allocated strings that can be
-	 * safely freed by rotation and at program exit.
-	 */
-	char *filename_copy = strdup(filename);
-	if (filename_copy == NULL) {
-		perror("open_dumper: strdup(filename)");
-		return -1;
-	}
-
-	/* * Extcap Improvement: Manually open file/pipe first.
-	 * This ensures binary mode and compatibility with Windows named pipes.
-	 */
+	char *filename_copy = strdup(filename ? filename : "-");
 	FILE *fp = NULL;
-	if (strcmp(filename, "-") == 0) {
-		fp = stdout;
+	
+	/* Identify the source handle we need to clone */
+	FILE *master_handle = NULL;
+
+	if (g_fifo_handle != NULL) {
+		/* Case A: We are in Extcap mode (-F) using the global pipe */
+		master_handle = g_fifo_handle;
+	} else if (strcmp(filename, "-") == 0) {
+		/* Case B: We are in Standalone mode (-o -) using stdout */
+		master_handle = stdout;
+	}
+
+	if (master_handle != NULL) {
+		/* Always duplicate the master handle.
+		 * If we pass master_handle directly, pcap_dump_close() will close it,
+		 * causing "Bad file descriptor" on the next rotation.
+		 */
+#ifdef _WIN32
+		int master_fd = _fileno(master_handle);
+		int new_fd = _dup(master_fd);
+		if (new_fd == -1) {
+			perror("open_dumper: _dup failed");
+			free(filename_copy);
+			return -1;
+		}
+		/* Force binary mode on the clone */
+		_setmode(new_fd, _O_BINARY);
+		fp = _fdopen(new_fd, "wb");
+#else
+		int master_fd = fileno(master_handle);
+		int new_fd = dup(master_fd);
+		if (new_fd == -1) {
+			perror("open_dumper: dup failed");
+			free(filename_copy);
+			return -1;
+		}
+		fp = fdopen(new_fd, "wb");
+#endif
 	} else {
+		/* Case C: Normal file output (-o capture.pcap) */
 		fp = fopen(filename, "wb");
 	}
 
 	if (!fp) {
-		fprintf(stderr, "Error opening file/pipe '%s': %s\n", filename, strerror(errno));
+		fprintf(stderr, "Error opening output stream: %s\n", strerror(errno));
 		free(filename_copy);
 		return -1;
 	}
 
-	/* Use pcap_dump_fopen instead of pcap_dump_open */
+	/* Disable buffering to prevent data getting stuck during rotation */
+	setvbuf(fp, NULL, _IONBF, 0);
+
 	pcap_dumper_t *dumper = pcap_dump_fopen(my_pcap->pcap, fp);
 	if (!dumper) {
-		fprintf(stderr, "Could not open output file: %s\n", pcap_geterr(my_pcap->pcap));
-		if (fp != stdout) fclose(fp);
+		fprintf(stderr, "Could not open pcap dumper: %s\n", pcap_geterr(my_pcap->pcap));
+		/* Only close fp if it's the clone we just created */
+		if (fp != master_handle) fclose(fp);
 		free(filename_copy);
 		return -1;
 	}
 
-#ifndef _WIN32
-	int dumper_fd = fileno(fp);
-	if (dumper_fd != -1) {
-		int fdflags = fcntl(dumper_fd, F_GETFD, 0);
-		if (fdflags != -1) {
-			fcntl(dumper_fd, F_SETFD, fdflags | FD_CLOEXEC);
-		}
-	}
-#endif
-
+	/* Cleanup old dumper if it exists */
 	if (my_pcap->dumper != NULL) {
+		pcap_dump_flush(my_pcap->dumper);
 		pcap_dump_close(my_pcap->dumper);
 	}
 	if (my_pcap->filename != NULL) {
 		free((void *)my_pcap->filename);
-		my_pcap->filename = NULL;
 	}
 
 	my_pcap->dumper   = dumper;
 	my_pcap->filename = filename_copy;
 	my_pcap->fp       = fp;
 
-	if (my_pcap->verbose) {
-		fprintf(stderr, "Successfully opened output file: %s\n", filename_copy);
-	}
 	return 0;
 }
 
 static void close_dumper(struct my_pcap_t *my_pcap) {
 	if (my_pcap->dumper != NULL) {
+		/* Force flush everything to the OS before closing */
+		pcap_dump_flush(my_pcap->dumper);
+		
+		/* If we have access to the FILE*, flush it too */
+		if (my_pcap->fp) {
+			fflush(my_pcap->fp);
+		}
+		
 		pcap_dump_close(my_pcap->dumper);
 	}
 	my_pcap->dumper   = NULL;
@@ -875,11 +895,27 @@ int main(int argc, char **argv) {
 			/* Just a mode flag, we proceed to setup */
 			break;
 		case 'F': /* --fifo */
-			/* Wireshark passes the pipe path here. We treat it like -o */
+		{
+			/* Open the pipe ONCE and keep it in the global variable. */
+			/* We never close this until the program exits. */
+			g_fifo_handle = fopen(optarg, "wb");
+			if (!g_fifo_handle) {
+				fprintf(stderr, "Error opening pipe '%s': %s\n", optarg, strerror(errno));
+				retval = -1;
+				goto exit;
+			}
+			
+			/* Disable buffering on the master handle too */
+			setvbuf(g_fifo_handle, NULL, _IONBF, 0);
+
+			/* We set filename_template to "-" just as a placeholder string,
+			   but open_dumper will ignore it and use g_fifo_handle instead. */
 			if (my_pcap.filename_template) free((void*)my_pcap.filename_template);
-			my_pcap.filename_template = strdup(optarg);
-			flush_every_packet = 1; /* Always flush for real-time pipes */
+			my_pcap.filename_template = strdup("-");
+			
+			flush_every_packet = 1; 
 			break;
+		}
 		case 'U':
 		/* Wireshark sent a capture filter. We don't support it, so we warn and exit. */
 		if (optarg && strlen(optarg) > 0) {
@@ -1084,62 +1120,13 @@ int main(int argc, char **argv) {
 		goto err_cleanup_pipe;
 	}
 
-	{
-		pcap_t *pcap = pcap_open_dead(DLT_EN10MB, recv_buffer_size);
-		if (!pcap) {
-			fprintf(stderr, "Could not init pcap\n");
-			retval = -1;
-			goto err_cleanup_tzsp;
-		}
-		my_pcap.pcap = pcap;
-	}
-
-	{
-		const char *initial_filename = get_filename(&my_pcap);
-		if (!initial_filename) {
-			fprintf(stderr, "Could not get initial filename\n");
-			retval = -1;
-			goto err_cleanup_pcap;
-		}
-
-		if (open_dumper(&my_pcap, initial_filename) == -1) {
-			free((void *)initial_filename);
-			retval = -1;
-			goto err_cleanup_pcap;
-		}
-
-		free((void *)initial_filename);
-
-		if ((my_pcap.rotation_size_threshold > 0 || my_pcap.rotation_interval > 0)) {
-			struct stat fp_stat;
-
-			if (my_pcap.fp == NULL) {
-				fprintf(stderr, "Output file pointer is NULL\n");
-				retval = -1;
-				goto err_cleanup_pcap;
-			}
-
-			if (fstat(fileno(my_pcap.fp), &fp_stat) == -1) {
-				perror("fstat");
-				retval = errno;
-				goto err_cleanup_pcap;
-			}
-
-			if (!S_ISREG(fp_stat.st_mode)) {
-				fprintf(stderr, "Output is not a regular file, but rotation was requested.\n");
-				retval = -1;
-				goto err_cleanup_pcap;
-			}
-		}
-	}
-
-	/* Warning fix: cast recv_buffer_size to size_t */
+	/* Allocate receive buffer BEFORE the loop */
 	recv_buffer = malloc((size_t)recv_buffer_size);
 	if (!recv_buffer) {
 		fprintf(stderr, "Could not allocate receive buffer of %i bytes\n",
 				recv_buffer_size);
 		retval = -1;
-		goto err_cleanup_pcap;
+		goto err_cleanup_tzsp;
 	}
 
 	/* Main loop condition checks terminate_requested explicitly */
@@ -1156,7 +1143,6 @@ next_packet:
 		int maxfd = -1;
 
 		if (tzsp_listener >= 0) {
-			/* Warning fix: cast tzsp_listener to SOCKET for FD_SET */
 			#ifdef _WIN32
 			FD_SET((SOCKET)tzsp_listener, &read_set);
 			#else
@@ -1183,7 +1169,7 @@ next_packet:
 		/* Windows: Select with timeout to poll for shutdown signals */
 		struct timeval tv = { 0, 100000 }; /* 100ms */
 		int sret = select(maxfd + 1, &read_set, NULL, NULL, &tv);
-		if (sret == 0) continue; /* Timeout, check terminate_requested loop condition */
+		if (sret == 0) continue; 
 		if (sret == -1) {
 			if (WSAGetLastError() == WSAEINTR) continue;
 			fprintf(stderr, "select failed: %d\n", WSAGetLastError());
@@ -1194,7 +1180,6 @@ next_packet:
 
 #ifndef _WIN32
 		if (FD_ISSET(self_pipe_fds[0], &read_set)) {
-			/* Drain the self-pipe to clear wake-up notifications. */
 			{
 				char buf[64];
 				ssize_t r;
@@ -1210,13 +1195,7 @@ next_packet:
 					break;
 				}
 			}
-
-			/* If a terminate request was recorded, exit the loop. */
-			if (terminate_requested) {
-				break;
-			}
-
-			/* If a child has exited, reap it/them here. */
+			if (terminate_requested) break;
 			if (child_exited) {
 				int saved_errno = errno;
 				int status;
@@ -1227,8 +1206,6 @@ next_packet:
 				errno = saved_errno;
 				child_exited = 0;
 			}
-
-			/* Continue to next select() without processing packets. */
 			continue;
 		}
 #endif
@@ -1237,27 +1214,24 @@ next_packet:
 			goto next_packet;
 		}
 
-		/* Warning fix: cast tzsp_listener to SOCKET for recvfrom */
 		#ifdef _WIN32
 		ssize_t readsz =
 			recvfrom((SOCKET)tzsp_listener, recv_buffer, recv_buffer_size, 0,
-					 NULL, NULL);
+					NULL, NULL);
 		#else
 		ssize_t readsz =
 			recvfrom(tzsp_listener, recv_buffer, recv_buffer_size, 0,
-					 NULL, NULL);
+					NULL, NULL);
 		#endif
 
 		if (readsz == -1) {
 			perror("recv()");
 			break;
 		}
-
 		if (readsz > recv_buffer_size) {
 			fprintf(stderr, "Received oversized UDP packet\n");
 			goto next_packet;
 		}
-
 		if (readsz == 0) {
 			fprintf(stderr, "Zero-length UDP packet ignored\n");
 			goto next_packet;
@@ -1284,57 +1258,79 @@ next_packet:
 		int dlt = tzsp_encap_to_dlt(ntohs(hdr->encap));
 		if (dlt < 0) {
 			fprintf(stderr,
-				"Unsupported TZSP encapsulation type: %u\n",
+				"Unsupported TZSP encapsulation type: %u (0x%04x)\n",
+				(unsigned)ntohs(hdr->encap),
 				(unsigned)ntohs(hdr->encap));
 			goto next_packet;
 		}
 
-		/* If DLT changed, reopen pcap dumper */
-		if (my_pcap.pcap && pcap_datalink(my_pcap.pcap) != dlt) {
+		/* ---------------------------------------------------------
+		 * LAZY INITIALIZATION: Wait for first packet to open stream
+		 * --------------------------------------------------------- */
+		if (my_pcap.pcap == NULL) {
+			if (my_pcap.verbose) {
+				fprintf(stderr, "First packet received. Initializing stream with DLT %d\n", dlt);
+			}
+			my_pcap.pcap = pcap_open_dead(dlt, recv_buffer_size);
+			if (!my_pcap.pcap) {
+				fprintf(stderr, "Could not init pcap for DLT %d\n", dlt);
+				retval = -1;
+				goto err_cleanup_pcap;
+			}
+
+			const char *initial_filename = get_filename(&my_pcap);
+			if (open_dumper(&my_pcap, initial_filename) == -1) {
+				if (initial_filename) free((void *)initial_filename);
+				retval = -1;
+				goto err_cleanup_pcap;
+			}
+			if (initial_filename) free((void *)initial_filename);
+		}
+		/* Fallback: If DLT changes mid-stream */
+		else if (pcap_datalink(my_pcap.pcap) != dlt) {
+			if (my_pcap.verbose) {
+				fprintf(stderr, "DLT changed from %d to %d, rotating...\n",
+						pcap_datalink(my_pcap.pcap), dlt);
+			}
 			pcap_t *new_pcap = pcap_open_dead(dlt, recv_buffer_size);
 			if (!new_pcap) {
 				fprintf(stderr, "Could not reinitialize pcap for DLT %d\n", dlt);
 				retval = -1;
 				goto err_cleanup_pcap;
 			}
-			pcap_close(my_pcap.pcap);
+
+			pcap_t *old_pcap = my_pcap.pcap;
 			my_pcap.pcap = new_pcap;
-			/* Reopen dumper with new DLT */
+
 			if (rotate_dumper(&my_pcap) != 0) {
 				fprintf(stderr, "Error rotating dumper after DLT change\n");
+				pcap_close(old_pcap);
 				retval = -1;
 				goto err_cleanup_pcap;
 			}
+			pcap_close(old_pcap);
 		}
 
 		p += sizeof(struct tzsp_header);
 
 		if (my_pcap.verbose) {
 			fprintf(stderr,
-					"header { version = %u, type = %s(%u), encap = 0x%.4x }\n",
-					(unsigned)hdr->version,
-					name_tag(hdr->type,
-							 tzsp_type_names, ARRAYSZ(tzsp_type_names)),
-					(unsigned)hdr->type,
-					(unsigned)ntohs(hdr->encap));
+				"header { version = %u, type = %s(%u), encap = %u (0x%04x) }\n",
+				(unsigned)hdr->version,
+				name_tag(hdr->type,
+						 tzsp_type_names, ARRAYSZ(tzsp_type_names)),
+				(unsigned)hdr->type,
+				(unsigned)ntohs(hdr->encap),
+				(unsigned)ntohs(hdr->encap));
 		}
 
 		char got_end_tag = 0;
 
-		// We should only have to deal with packets of type "Received"
-		// here, since we are sinking packets. However, some sniffers
-		// send packets as "Transmit". While we're going to ignore the
-		// intent of retransmitting the packet, there's still a valid
-		// encapsulated packet here, which for the purpose of being
-		// useful, we should still emit.
 		if (hdr->version == 1 &&
 			(hdr->type == TZSP_TYPE_RECEIVED_TAG_LIST ||
 			 hdr->type == TZSP_TYPE_PACKET_FOR_TRANSMIT))
 		{
 			while (p < end) {
-				// some packets only have the type field, which is
-				// guaranteed by (p < end).
-
 				uint8_t tag_type = (uint8_t)*p;
 
 				if (my_pcap.verbose) {
@@ -1389,14 +1385,6 @@ next_packet:
 			goto next_packet;
 		}
 
-		if (my_pcap.verbose) {
-			fprintf(stderr,
-			        "\tpacket data begins at offset 0x%zx, length 0x%zx\n",
-					(size_t)(p - recv_buffer),
-					(size_t)(readsz - (p - recv_buffer)));
-		}
-
-		// packet remains starting at p
 		ptrdiff_t payload_offset = p - recv_buffer;
 		if (payload_offset < 0) {
 			fprintf(stderr, "Internal error: invalid payload offset\n");
@@ -1435,8 +1423,6 @@ next_packet:
 
 		pcap_dump((u_char*) my_pcap.dumper, &pcap_hdr, (u_char*) p);
 
-		// since pcap_dump doesn't report errors directly, we have
-		// to approximate by checking its underlying file.
 		if (my_pcap.fp && ferror(my_pcap.fp)) {
 			fprintf(stderr, "error writing via pcap_dump\n");
 			break;
@@ -1455,7 +1441,7 @@ next_packet:
 				goto err_cleanup_pcap;
 			}
 		}
-	}
+	} /* End of while loop */
 
 err_cleanup_pcap:
 	if (recv_buffer) {
@@ -1494,12 +1480,16 @@ err_cleanup_pipe:
 exit:
 	if (my_pcap.filename_template)
 		free((void*) my_pcap.filename_template);
-
 	if (my_pcap.filename)
 		free((void*) my_pcap.filename);
-
 	if (my_pcap.postrotate_command)
 		free((void*) my_pcap.postrotate_command);
+
+	/* Cleanly close the Extcap pipe if it was open */
+	if (g_fifo_handle) {
+		fclose(g_fifo_handle);
+		g_fifo_handle = NULL;
+	}
 
 #ifdef _WIN32
 	WSACleanup();
