@@ -105,16 +105,12 @@
 
 #define ARRAYSZ(x) (sizeof(x)/sizeof(*x))
 
-/* Standard libpcap LINKTYPE values used by TZSP */
-#define TZSP_ENCAP_ETHERNET           1
-#define TZSP_ENCAP_802_11_LEGACY      18  /* Historical 802.11 */
-#define TZSP_ENCAP_802_11             105 /* Modern DLT_IEEE802_11 */
-#define TZSP_ENCAP_802_11_PRISM       119
-#define TZSP_ENCAP_802_11_RADIOTAP    127
-#define TZSP_ENCAP_802_11_AVS         163
-
-/* MikroTik Wave2/AX driver bug sends 126 instead of 127 */
-#define TZSP_ENCAP_MIKROTIK_WAVE2     126
+/* Encapsulation type values (from Wireshark's packet-tzsp.c) */
+#define TZSP_ENCAP_ETHERNET             1
+#define TZSP_ENCAP_IEEE_802_11          18
+#define TZSP_ENCAP_IEEE_802_11_PRISM    119
+#define TZSP_ENCAP_IEEE_802_11_RADIOTAP 126
+#define TZSP_ENCAP_IEEE_802_11_AVS      127
 
 #define DEFAULT_RECV_BUFFER_SIZE 65535
 #define DEFAULT_LISTEN_PORT 37008
@@ -748,21 +744,22 @@ static void usage(const char *program) {
 }
 
 
-/* Map TZSP encapsulation types to libpcap DLTs. */
+/*
+ * Map TZSP encapsulation types to libpcap DLTs.
+ * Constant names follow Wireshark's packet-tzsp.c dissector.
+ */
 static int tzsp_encap_to_dlt(uint16_t encap)
 {
 	switch (encap) {
 		case TZSP_ENCAP_ETHERNET:
 			return DLT_EN10MB;
-		case TZSP_ENCAP_802_11_LEGACY:
-		case TZSP_ENCAP_802_11:
+		case TZSP_ENCAP_IEEE_802_11:
 			return DLT_IEEE802_11;
-		case TZSP_ENCAP_802_11_PRISM:
+		case TZSP_ENCAP_IEEE_802_11_PRISM:
 			return DLT_PRISM_HEADER;
-		case TZSP_ENCAP_802_11_AVS:
+		case TZSP_ENCAP_IEEE_802_11_AVS:
 			return DLT_IEEE802_11_RADIO_AVS;
-		case TZSP_ENCAP_802_11_RADIOTAP:
-		case TZSP_ENCAP_MIKROTIK_WAVE2: /* Map MikroTik's typo? to standard Radiotap */
+		case TZSP_ENCAP_IEEE_802_11_RADIOTAP:
 			return DLT_IEEE802_11_RADIO;
 		default:
 			return -1; /* unsupported */
