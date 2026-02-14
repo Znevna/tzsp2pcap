@@ -2,32 +2,32 @@
  * tzsp2pcap for Windows & Wireshark Extcap
  * Fixed for MinGW/MSYS2 compilation
  */
-
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <stdint.h>
-#include <limits.h>
-#include <stdlib.h>
-#include <stdio.h>
 #include <assert.h>
-#include <errno.h>
-#include <signal.h>
-#include <string.h>
-#include <time.h>
-#include <stddef.h>
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <time.h>
 
 /* --- Windows Compatibility Layer --- */
 #ifdef _WIN32
-	#include <winsock2.h>
-	#include <ws2tcpip.h>
-	#include <windows.h>
-	#include <process.h> /* For _spawnlp */
-	#include <io.h>
-	
-	/* MinGW/MSYS2 specific includes for command line parsing */
-	#include <unistd.h>
-	#include <getopt.h>
+#include <io.h>
+#include <process.h> /* For _spawnlp */
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
+/* MinGW/MSYS2 specific includes for command line parsing */
+#include <getopt.h>
+#include <unistd.h>
 
 	/* Windows mappings for standard POSIX functions */
 	#define close closesocket
@@ -87,17 +87,18 @@
 	}
 
 #else
-	/* Original POSIX Includes */
-	#include <arpa/inet.h> /* For inet_pton */
-	#include <sys/wait.h>
-	#include <sys/param.h>
-	#include <unistd.h>
-	#include <sys/socket.h>
-	#include <sys/select.h>
-	#include <netinet/in.h>
-	#include <sys/time.h>
-	#include <sys/resource.h>
-	#include <getopt.h> /* Ensure getopt_long is available on Linux too */
+/* Original POSIX Includes */
+#include <arpa/inet.h> /* For inet_pton */
+#include <getopt.h>    /* Ensure getopt_long is available on Linux too */
+#include <netinet/in.h>
+#include <sys/param.h>
+#include <sys/resource.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #endif
 /* --- End Windows Compatibility Layer --- */
 
