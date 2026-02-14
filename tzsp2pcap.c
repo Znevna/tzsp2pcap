@@ -105,12 +105,16 @@
 
 #define ARRAYSZ(x) (sizeof(x)/sizeof(*x))
 
-/* Named constants for TZSP encapsulation types */
+/* Standard libpcap LINKTYPE values used by TZSP */
 #define TZSP_ENCAP_ETHERNET           1
-#define TZSP_ENCAP_802_11             2
-#define TZSP_ENCAP_802_11_PRISM       3
-#define TZSP_ENCAP_802_11_AVS         4
-#define TZSP_ENCAP_802_11_RADIOTAP    5
+#define TZSP_ENCAP_802_11_LEGACY      18  /* Historical 802.11 */
+#define TZSP_ENCAP_802_11             105 /* Modern DLT_IEEE802_11 */
+#define TZSP_ENCAP_802_11_PRISM       119
+#define TZSP_ENCAP_802_11_RADIOTAP    127
+#define TZSP_ENCAP_802_11_AVS         163
+
+/* MikroTik Wave2/AX driver bug sends 126 instead of 127 */
+#define TZSP_ENCAP_MIKROTIK_WAVE2     126
 
 #define DEFAULT_RECV_BUFFER_SIZE 65535
 #define DEFAULT_LISTEN_PORT 37008
@@ -726,6 +730,7 @@ static void usage(const char *program) {
 			"\n"
 			"Usage %s [-h] [-v] [-f] [-a ADDRESS] [-p PORT] [-o FILENAME] ...\n"
 			"\t-h           Display this message\n"
+			"\t-V           Display extcap version\n"
 			"\t-v           Verbose (repeat to increase up to -vv)\n"
 			"\t-f           Flush output after every packet\n"
 			"\t-b FILTER    Specify a BPF capture filter (e.g., \"tcp port 80\")\n"
@@ -742,16 +747,14 @@ static void usage(const char *program) {
 			DEFAULT_RECV_BUFFER_SIZE);
 }
 
-/* Use named constants for encapsulation type mapping */
-/*
- * Map TZSP encapsulation types to libpcap DLTs.
- * These values follow the MikroTik TZSP specification.
- */
+
+/* Map TZSP encapsulation types to libpcap DLTs. */
 static int tzsp_encap_to_dlt(uint16_t encap)
 {
 	switch (encap) {
 		case TZSP_ENCAP_ETHERNET:
 			return DLT_EN10MB;
+		case TZSP_ENCAP_802_11_LEGACY:
 		case TZSP_ENCAP_802_11:
 			return DLT_IEEE802_11;
 		case TZSP_ENCAP_802_11_PRISM:
@@ -759,10 +762,8 @@ static int tzsp_encap_to_dlt(uint16_t encap)
 		case TZSP_ENCAP_802_11_AVS:
 			return DLT_IEEE802_11_RADIO_AVS;
 		case TZSP_ENCAP_802_11_RADIOTAP:
+		case TZSP_ENCAP_MIKROTIK_WAVE2: /* Map MikroTik's typo? to standard Radiotap */
 			return DLT_IEEE802_11_RADIO;
-		/* FIX for Wave2/AX Drivers (Type 126) */
-		case 126:
-			return DLT_IEEE802_11_RADIO; /* Map MikroTik's 126 to standard Radiotap */
 		default:
 			return -1; /* unsupported */
 	}
@@ -785,7 +786,7 @@ static int validate_log_path(const char *log_path) {
 
 /* --- Extcap Helper Functions --- */
 static void extcap_print_interfaces() {
-	printf("extcap {version=0.0.9}{display=MikroTik TZSP Listener}{help=https://github.com/Znevna/tzsp2pcap}\n");
+	printf("extcap {version=0.1.0}{display=MikroTik TZSP Listener}{help=https://github.com/Znevna/tzsp2pcap}\n");
 	printf("interface {value=tzsp}{display=TZSP Listener}{kind=nif}\n");
 }
 
@@ -876,7 +877,7 @@ int main(int argc, char **argv) {
 	int option_index = 0;
 
 	/* Use getopt_long to parse both short (legacy) and long (extcap) arguments */
-	while ((opt = getopt_long(argc, argv, ":fp:a:o:s:C:G:z:l:vhb:", long_options, &option_index)) != -1) {
+	while ((opt = getopt_long(argc, argv, ":fhvVp:a:o:s:C:G:z:l:b:", long_options, &option_index)) != -1) {
 		switch (opt) {
 		/* --- Extcap Handling --- */
 		case 'I':
@@ -889,7 +890,7 @@ int main(int argc, char **argv) {
 			extcap_print_config();
 			return 0;
 		case 'V':
-			printf("extcap {version=0.0.9}\n");
+			printf("extcap {version=0.1.0}\n");
 			return 0;
 		case 'i':
 			/* Wireshark passes the interface name (e.g., "tzsp"). */
@@ -908,10 +909,6 @@ int main(int argc, char **argv) {
 				retval = -1;
 				goto exit;
 			}
-			
-			/* Disable buffering on the master handle too */
-			setvbuf(g_fifo_handle, NULL, _IONBF, 0);
-
 			/* We set filename_template to "-" just as a placeholder string,
 			   but open_dumper will ignore it and use g_fifo_handle instead. */
 			if (my_pcap.filename_template) free((void*)my_pcap.filename_template);
