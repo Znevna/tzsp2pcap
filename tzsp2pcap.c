@@ -115,6 +115,7 @@
 #define DEFAULT_RECV_BUFFER_SIZE 65535
 #define DEFAULT_LISTEN_PORT 37008
 #define DEFAULT_OUT_FILENAME "-"
+#define PROGRAM_VERSION "0.1.1"
 
 // constants
 
@@ -721,13 +722,13 @@ static inline const char* name_tag(int tag,
 static void usage(const char *program) {
 	fprintf(stderr,
 			"\n"
-			"tzsp2pcap: receive tazmen sniffer protocol over udp and\n"
+			"tzsp2pcap (v%s): receive tazmen sniffer protocol over udp and\n"
 			"produce pcap formatted output\n"
 			"\n"
-			"Usage %s [-h] [-v] [-f] [-a ADDRESS] [-p PORT] [-o FILENAME] ...\n"
+			"Usage %s [-h] [-v] [-V] [-f] [-b FILTER] [-a ADDRESS] [-p PORT] [-o FILENAME] ...\n"
 			"\t-h           Display this message\n"
-			"\t-V           Display extcap version\n"
 			"\t-v           Verbose (repeat to increase up to -vv)\n"
+			"\t-V           Display extcap version\n"
 			"\t-f           Flush output after every packet\n"
 			"\t-b FILTER    Specify a BPF capture filter (e.g., \"tcp port 80\")\n"
 			"\t-a ADDRESS   Specify IP address to listen on (defaults to any)\n"
@@ -738,6 +739,7 @@ static void usage(const char *program) {
 			"\t-C FILESIZE  Rotate file when FILESIZE is reached\n"
 			"\t-z CMD       Post-rotate command to execute\n"
 			"\t-l FILEPATH  Write log messages to FILEPATH\n",
+			PROGRAM_VERSION,
 			program,
 			DEFAULT_LISTEN_PORT,
 			DEFAULT_RECV_BUFFER_SIZE);
@@ -783,7 +785,7 @@ static int validate_log_path(const char *log_path) {
 
 /* --- Extcap Helper Functions --- */
 static void extcap_print_interfaces() {
-	printf("extcap {version=0.1.0}{display=MikroTik TZSP Listener}{help=https://github.com/Znevna/tzsp2pcap}\n");
+	printf("extcap {version=%s}{display=MikroTik TZSP Listener}{help=https://github.com/Znevna/tzsp2pcap}\n", PROGRAM_VERSION);
 	printf("interface {value=tzsp}{display=TZSP Listener}{kind=nif}\n");
 }
 
@@ -887,7 +889,7 @@ int main(int argc, char **argv) {
 			extcap_print_config();
 			return 0;
 		case 'V':
-			printf("extcap {version=0.1.0}\n");
+			printf("extcap {version=%s}\n", PROGRAM_VERSION);
 			return 0;
 		case 'i':
 			/* Wireshark passes the interface name (e.g., "tzsp"). */
@@ -1335,6 +1337,19 @@ next_packet:
 		}
 		/* Fallback: If DLT changes mid-stream */
 		else if (pcap_datalink(my_pcap.pcap) != dlt) {
+			
+			/* 1. CONTINUOUS STREAM MODE: Drop the packet 
+			 * We cannot rotate if writing to Wireshark Extcap pipe OR stdout.
+			 * The PCAP format strictly requires a single DLT per stream.
+			 */
+			if (g_fifo_handle != NULL || strcmp(my_pcap.filename_template, "-") == 0) {
+				fprintf(stderr, 
+					"WARNING: Dropped packet. Router sent DLT %d, but stream is locked to DLT %d.\n", 
+					dlt, pcap_datalink(my_pcap.pcap));
+				goto next_packet;
+			}
+			
+			/* 2. STANDALONE FILE MODE: Safe to rotate the file */
 			if (my_pcap.verbose) {
 				fprintf(stderr, "DLT changed from %d to %d, rotating...\n",
 						pcap_datalink(my_pcap.pcap), dlt);
