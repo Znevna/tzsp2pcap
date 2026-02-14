@@ -40,9 +40,12 @@
 	/* Windows does not have gettimeofday, so we implement a shim for PCAP timestamps */
 	static int gettimeofday(struct timeval *tv, void *tz) {
 		(void)tz; /* Fix unused parameter warning */
-		if (tv) {
-			FILETIME ft;
-			unsigned __int64 tmpres = 0;
+		/* Add NULL check for safety */
+		if (!tv) {
+			return -1;
+		}
+		FILETIME ft;
+		unsigned __int64 tmpres = 0;
 
 			/* Optimization: Try to load high-precision timer (Win8+) */
 			static void (WINAPI *pGetSystemTimePreciseAsFileTime)(LPFILETIME) = NULL;
@@ -76,7 +79,6 @@
 			tmpres -= 11644473600000000ULL; /* Convert 1601 epoch to 1970 epoch */
 			tv->tv_sec = (long)(tmpres / 1000000UL);
 			tv->tv_usec = (long)(tmpres % 1000000UL);
-		}
 		return 0;
 	}
 
