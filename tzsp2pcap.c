@@ -72,9 +72,9 @@
 				GetSystemTimeAsFileTime(&ft);
 			}
 
-			tmpres |= ft.dwHighDateTime;
+			tmpres = (unsigned __int64)ft.dwHighDateTime;
 			tmpres <<= 32;
-			tmpres |= ft.dwLowDateTime;
+			tmpres |= (unsigned __int64)ft.dwLowDateTime;
 			tmpres /= 10;
 			tmpres -= 11644473600000000ULL; /* Convert 1601 epoch to 1970 epoch */
 			tv->tv_sec = (long)(tmpres / 1000000UL);
