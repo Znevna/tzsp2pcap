@@ -116,9 +116,12 @@
 #define TZSP_ENCAP_IEEE_802_11_AVS      127
 
 #define DEFAULT_RECV_BUFFER_SIZE 65535
+#define MAX_RECV_BUFFER_SIZE (16 * 1024 * 1024)
 #define DEFAULT_LISTEN_PORT 37008
 #define DEFAULT_OUT_FILENAME "-"
 #define PROGRAM_VERSION "0.1.1"
+#define WINDOWS_SELECT_TIMEOUT_MS 100
+#define SELF_PIPE_BUFFER_SIZE 64
 
 // constants
 
@@ -968,12 +971,12 @@ int main(int argc, char **argv) {
 			my_pcap.filename_template = strdup(optarg);
 			break;
 
-		case 's':
-		{
+		case 's': {
 			char *end = NULL;
 			long size_val = strtol(optarg, &end, 10);
-			if (size_val <= 0 || size_val > 16 * 1024 * 1024) {
-				fprintf(stderr, "Invalid receive buffer size %ld\n", size_val);
+			if (size_val <= 0 || size_val > MAX_RECV_BUFFER_SIZE) {
+				fprintf(stderr, "Invalid receive buffer size %ld (max %d)\n", size_val,
+								MAX_RECV_BUFFER_SIZE);
 				retval = -1;
 				goto exit;
 			}
@@ -1209,7 +1212,7 @@ next_packet:
 		}
 #else
 		/* Windows: Select with timeout to poll for shutdown signals */
-		struct timeval tv = { 0, 100000 }; /* 100ms */
+		struct timeval tv = {0, WINDOWS_SELECT_TIMEOUT_MS * 1000};
 		int sret = select(maxfd + 1, &read_set, NULL, NULL, &tv);
 		if (sret == 0) continue; 
 		if (sret == -1) {
@@ -1223,7 +1226,7 @@ next_packet:
 #ifndef _WIN32
 		if (FD_ISSET(self_pipe_fds[0], &read_set)) {
 			{
-				char buf[64];
+				char buf[SELF_PIPE_BUFFER_SIZE];
 				ssize_t r;
 				for (;;) {
 					r = read(self_pipe_fds[0], buf, sizeof(buf));
@@ -1270,10 +1273,7 @@ next_packet:
 			perror("recv()");
 			break;
 		}
-		if (readsz > recv_buffer_size) {
-			fprintf(stderr, "Received oversized UDP packet\n");
-			goto next_packet;
-		}
+		/* Note: recvfrom never returns more than buffer size, check removed */
 		if (readsz == 0) {
 			fprintf(stderr, "Zero-length UDP packet ignored\n");
 			goto next_packet;
