@@ -8,16 +8,20 @@ alterations to work with other devices.
 
 ## Usage
 ```
-Usage tzsp2pcap [-h] [-v] [-f] [-p PORT] [-o FILENAME] [-s SIZE] [-G SECONDS] [-C SIZE] [-z CMD]
-    -h           Display this message
-    -v           Verbose (repeat to increase up to -vv)
-    -f           Flush output after every packet
-    -p PORT      Specify port to listen on  (defaults to 37008)
-    -o FILENAME  Write output to FILENAME   (defaults to stdout)
-    -s SIZE      Receive buffer size        (defaults to 65535)
-    -G SECONDS   Rotate file every n seconds
-    -C FILESIZE  Rotate file when FILESIZE is reached
-    -z CMD       Post-rotate command to execute
+Usage tzsp2pcap [-h] [-v] [-V] [-f] [-b FILTER] [-a ADDRESS] [-p PORT] [-o FILENAME] ...
+        -h           Display this message
+        -v           Verbose (repeat to increase up to -vv)
+        -V           Display extcap version
+        -f           Flush output after every packet
+        -b FILTER    Specify a BPF capture filter (e.g., "tcp port 80")
+        -a ADDRESS   Specify IP address to listen on (defaults to any)
+        -p PORT      Specify port to listen on  (defaults to 37008)
+        -o FILENAME  Write output to FILENAME   (defaults to stdout)
+        -s SIZE      Receive buffer size        (defaults to 65535)
+        -G SECONDS   Rotate file every n seconds
+        -C FILESIZE  Rotate file when FILESIZE is reached
+        -z CMD       Post-rotate command to execute
+        -l FILEPATH  Write log messages to FILEPATH
 ```
 
 ## Example usage
